@@ -10,4 +10,5 @@ module Mail2rss26
 end
 
 require "mail2rss26/message"
+require "mail2rss26/feed"
 require "mail2rss26/cli"
