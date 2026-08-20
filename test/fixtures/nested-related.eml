@@ -1,0 +1,87 @@
+Return-Path: <bounces+7712-a3@mail.pixelwharf.example>
+Received: from mail-3.pixelwharf.example (mail-3.pixelwharf.example [203.0.113.9])
+	by feeds.lasocha.net (OpenSMTPD) with ESMTPS id 2f7c19be
+	(TLS: TLSv1.3:TLS_AES_256_GCM_SHA384:256:NO)
+	for <design.7712ab@feeds.lasocha.net>;
+	Wed, 05 Aug 2026 09:12:47 +0200 (CEST)
+From: Pixel Wharf <hello@pixelwharf.example>
+To: design.7712ab@feeds.lasocha.net
+Subject: Pixel Wharf #08: the typeface that ate our budget
+Date: Wed, 05 Aug 2026 07:12:44 +0000
+Message-ID: <pw-08.20260805071244@mail.pixelwharf.example>
+List-Id: Pixel Wharf <list.pixelwharf.example>
+List-Unsubscribe: <https://pixelwharf.example/u/7712ab>
+Precedence: list
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="--=_pw_alt_9f3a1c"
+
+This is a multi-part message in MIME format. Your reader should hide it.
+
+----=_pw_alt_9f3a1c
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+PIXEL WHARF #08
+The typeface that ate our budget
+
+We licensed a display face for the rebrand, then spent four weeks finding out
+what "per domain" means in a foundry contract. Here is the invoice, annotated.
+
+- What a webfont licence actually counts (hint: not visitors).
+- Three foundries whose terms fit on one screen.
+- The open face we would have shipped instead, in hindsight.
+
+Studio notes at the bottom, as always.
+
+--
+Unsubscribe: https://pixelwharf.example/u/7712ab
+
+----=_pw_alt_9f3a1c
+Content-Type: multipart/related; type="text/html"; boundary="--=_pw_rel_2c84d0"
+
+----=_pw_rel_2c84d0
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+<!DOCTYPE html>
+<html>
+  <body style="margin:0;background:#f4f2ee;">
+    <table width="100%" cellpadding="0" cellspacing="0" border="0">
+      <tr>
+        <td align="center" style="padding:24px;">
+          <img src="cid:masthead@pixelwharf.example" width="320" height="48"
+               alt="Pixel Wharf" style="display:block;border:0;">
+          <h1 style="font:600 22px/1.3 Helvetica,Arial,sans-serif;">
+            The typeface that ate our budget
+          </h1>
+          <p style="font:400 15px/1.6 Helvetica,Arial,sans-serif;text-align:left;">
+            We licensed a display face for the rebrand, then spent four weeks
+            finding out what &ldquo;per domain&rdquo; means in a foundry
+            contract. Here is the invoice, annotated.
+          </p>
+          <ul style="font:400 15px/1.6 Helvetica,Arial,sans-serif;text-align:left;">
+            <li>What a webfont licence actually counts (hint: not visitors).</li>
+            <li>Three foundries whose terms fit on one screen.</li>
+            <li>The open face we would have shipped instead, in hindsight.</li>
+          </ul>
+          <p style="font:400 12px Helvetica,Arial,sans-serif;color:#777;">
+            <a href="https://pixelwharf.example/u/7712ab">Unsubscribe</a>
+          </p>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+
+----=_pw_rel_2c84d0
+Content-Type: image/png; name="masthead.png"
+Content-Disposition: inline; filename="masthead.png"
+Content-ID: <masthead@pixelwharf.example>
+Content-Transfer-Encoding: base64
+
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmM
+IQAAAABJRU5ErkJggg==
+
+----=_pw_rel_2c84d0--
+
+----=_pw_alt_9f3a1c--

@@ -1,0 +1,51 @@
+Return-Path: <zielarze@lista.zielnik.example>
+Received: from lista.zielnik.example (lista.zielnik.example [198.51.100.77])
+	by feeds.lasocha.net (OpenSMTPD) with ESMTP id 5c0b771e
+	for <zielnik.b204@feeds.lasocha.net>;
+	Sat, 01 Aug 2026 07:15:41 +0200 (CEST)
+From: =?ISO-8859-2?Q?Zesp=F3=B3_Zielarski?= <biuletyn@zielnik.example>
+To: zielnik.b204@feeds.lasocha.net
+Subject: =?ISO-8859-2?Q?Biuletyn_Zielarski_nr_5:_pokrzywa_i_=B6wietlik?=
+Date: Sat, 1 Aug 2026 07:15:38 +0200
+Message-ID: <5c0b771e.20260801@zielnik.example>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="----=_Part_5_1754024138"
+
+------=_Part_5_1754024138
+Content-Type: text/plain; charset="ISO-8859-2"
+Content-Transfer-Encoding: quoted-printable
+
+BIULETYN ZIELARSKI NR 5
+
+Pokrzywa i =B6wietlik - dwie ro=B6liny, kt=F3re rosn=B1 tam, gdzie nikt i=
+ch nie sadzi=B3.
+
+W numerze:
+* Pokrzywa zwyczajna: zupa, nalewka, w=B3=F3kno.
+* =A6wietlik =B3=B1kowy i jego z=B3a s=B3awa w=B6r=F3d okulist=F3w.
+* Kalendarz zbior=F3w na wrzesie=F1 (p=F3=BCne =B3=B1ki, wczesne mrozy).
+
+Pozdrawiamy z ogrodu,
+Zesp=F3=B3 Zielarski
+
+------=_Part_5_1754024138
+Content-Type: text/html; charset="ISO-8859-2"
+Content-Transfer-Encoding: quoted-printable
+
+<html>
+  <body>
+    <h2>Biuletyn Zielarski nr 5</h2>
+    <p>Pokrzywa i =B6wietlik &mdash; dwie ro=B6liny, kt=F3re rosn=B1 tam,=
+ gdzie nikt ich nie sadzi=B3.</p>
+    <ul>
+      <li>Pokrzywa zwyczajna: zupa, nalewka, w=B3=F3kno.</li>
+      <li>=A6wietlik =B3=B1kowy i jego z=B3a s=B3awa w=B6r=F3d okulist=F3=
+w.</li>
+      <li>Kalendarz zbior=F3w na wrzesie=F1 (p=F3=BCne =B3=B1ki, wczesne =
+mrozy).</li>
+    </ul>
+    <p>Pozdrawiamy z ogrodu,<br>Zesp=F3=B3 Zielarski</p>
+  </body>
+</html>
+
+------=_Part_5_1754024138--

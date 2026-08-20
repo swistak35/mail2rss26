@@ -1,0 +1,23 @@
+Return-Path: <>
+Received: from bulk-07.megapromo.example (bulk-07.megapromo.example [192.0.2.201])
+	by feeds.lasocha.net (OpenSMTPD) with SMTP id 7e01aa93
+	for <okazje.3f1c@feeds.lasocha.net>;
+	Mon, 17 Aug 2026 04:31:09 +0200 (CEST)
+From: "MegaPromo" <noreply@megapromo.example>
+To: okazje.3f1c@feeds.lasocha.net
+Subject: Ostatnia szansa
+Subject: Ostatnia szansa: -40% tylko dzisiaj
+Date: Mon, 32 Aug 2026 25:71:00 +0500
+Message-ID: <bulk.2026081704310900042@megapromo.example>
+MIME-Version: 1.0
+Content-Type: text/html; charset="us-ascii"
+Content-Transfer-Encoding: 8bit
+X-Mailer: MegaPromo Sender 1.0
+
+<html><body>
+<h1>OSTATNIA SZANSA</h1>
+<p>Tylko dzisiaj: -40% na cały asortyment. Zniżka nie łączy się z niczym,
+nawet ze zdrowym rozsądkiem.</p>
+<p><a href="http://megapromo.example/40">Odbierz zniżkę</a></p>
+<p style="font-size:10px">Wypisz się: http://megapromo.example/out/3f1c</p>
+</body></html>

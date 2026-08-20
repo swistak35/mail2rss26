@@ -1,0 +1,60 @@
+Return-Path: <ledger-bounce@mail.harbourledger.example>
+Received: from out.harbourledger.example (out.harbourledger.example [198.51.100.140])
+	by feeds.lasocha.net (OpenSMTPD) with ESMTPS id 6a20cc11
+	for <ledger.c8d1e0@feeds.lasocha.net>;
+	Fri, 07 Aug 2026 18:02:10 +0200 (CEST)
+From: "Harbour Ledger" <ledger@harbourledger.example>
+To: ledger.c8d1e0@feeds.lasocha.net
+Subject: Harbour Ledger, week 32: the tide table, with footnotes
+Date: Fri, 7 Aug 2026 16:02:05 +0000
+Message-ID: <hl.week32.20260807160205@harbourledger.example>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="=_hl_mixed_0c1d2e"
+
+--=_hl_mixed_0c1d2e
+Content-Type: multipart/alternative; boundary="=_hl_alt_3f4a5b"
+
+--=_hl_alt_3f4a5b
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+HARBOUR LEDGER - WEEK 32
+The tide table, with footnotes
+
+The council published the winter tide table on a Friday afternoon, which is
+how you know somebody hoped nobody would read it. We read it.
+
+Attached: the table itself, and the coupon nobody asked for.
+
+--=_hl_alt_3f4a5b
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+<html>
+  <body style="font-family:Georgia,serif;">
+    <h1>The tide table, with footnotes</h1>
+    <p>The council published the winter tide table on a Friday afternoon,
+       which is how you know somebody hoped nobody would read it. We read it.</p>
+    <p>Attached: the table itself, and the coupon nobody asked for.</p>
+  </body>
+</html>
+
+--=_hl_alt_3f4a5b--
+
+--=_hl_mixed_0c1d2e
+Content-Type: text/plain; charset="utf-8"; name="coupon.txt"
+Content-Disposition: attachment; filename="coupon.txt"
+Content-Transfer-Encoding: 7bit
+
+COUPON TEXT THAT IS NOT THE NEWSLETTER BODY
+Code: HARBOUR-32 - one free coffee at the pier kiosk.
+
+--=_hl_mixed_0c1d2e
+Content-Type: application/pdf; name="tide-table-winter.pdf"
+Content-Disposition: attachment; filename="tide-table-winter.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKJcOkw7zDtsOfCjEgMCBvYmoKPDwvVHlwZS9DYXRhbG9nL1BhZ2VzIDIgMCBSPj4K
+ZW5kb2JqCnRyYWlsZXIKPDwvUm9vdCAxIDAgUj4+CiUlRU9GCg==
+
+--=_hl_mixed_0c1d2e--
