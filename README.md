@@ -19,9 +19,11 @@ sender ────► OpenSMTPD ───────────────�
 
 ## Status
 
-**Phase 4 of the plan.** `ingest` works end to end against a local directory: recipient →
-feed, message stored, feed re-rendered, documented exit codes. Packaging (`nix run`), the
-NixOS module and the `nixosTest` are Phases 5 and 6; nothing here has been deployed yet.
+**Phase 5 of the plan.** `ingest` works end to end against a local directory — recipient →
+feed, message stored, feed re-rendered, documented exit codes — and the whole thing is now
+packaged: `nix run .#default -- ingest` works from the flake alone, with no dev shell and
+nothing on `PATH`. The NixOS module and the `nixosTest` are Phase 6; nothing here has been
+deployed yet.
 
 The plan itself — settled decisions and why, open questions, phase-by-phase TODOs — lives
 in the personal notes repository rather than here. This repository is the program.
@@ -226,6 +228,12 @@ make all      # what to run before a commit
 KVM; the fixtures in `test/fixtures/` are real newsletters and are the actual specification
 of this program. Every newsletter that breaks it lands there next to the fix.
 
+`nix flake check` runs two derivations. `checks.tests` is that suite, against the source
+tree. `checks.package` is the other half and answers a question the suite structurally
+cannot: it builds `packages.default` and runs the *packaged* wrapper under `env -i`,
+because the suite runs with the interpreter's own gem directory in reach and a server
+never will — see "Installing" for why that difference is the expensive one.
+
 Trying it by hand needs a config file and a directory, nothing else:
 
 ```bash
@@ -243,7 +251,99 @@ cat test/fixtures/simple-multipart.eml \
 
 ## Installing
 
-Phase 5. `nix run .#default -- ingest` on a clean machine, straight from the flake, and
-then the NixOS module in Phase 6 — user, directories, `tmpfiles`, and the `mda` line that
-connects OpenSMTPD to `ingest`. Until then the only supported way to run this is out of the
-dev shell, as above.
+The flake is the only supported way to get this program. There is no `gem install` and
+nothing to copy anywhere: `nix run` and a flake input are the two doors in, and both build
+the same store path.
+
+### Straight from the flake
+
+```bash
+nix run .#default -- ingest --help          # from a checkout
+nix build .#default                          # ./result/bin/mail2rss26
+```
+
+`packages.default` is a single file in `$out/bin`: a wrapper around the interpreter, this
+library and the one gem. It carries everything it needs itself, so it runs with an empty
+environment —
+
+```bash
+env -i ./result/bin/mail2rss26 ingest --config /tmp/m2r/feeds.json \
+       --state-dir /tmp/m2r/state --recipient weekly.a41f9d@feeds.lasocha.net < message.eml
+```
+
+— which is the property that matters, because an `mda(8)` line is very nearly that.
+
+Two things about that wrapper are load-bearing rather than incidental.
+
+**It `exec`s the interpreter**, so the Ruby process replaces the shell and *its* exit code
+is what OpenSMTPD reads. The table above is the entire error-handling design; a wrapper
+that returned a status of its own would quietly turn a deferred delivery into a discarded
+one. There is a check that a `67` still arrives as a `67`.
+
+**`GEM_PATH` is set, not extended**, and it names the bundled gems only. This is the one
+sharp edge in packaging Ruby with Nix and it has now cut twice: setting `GEM_PATH` at all
+removes the *interpreter's own* gem directory from the search path, and since Ruby 3.0 a
+surprising number of things that feel like stdlib live there as **bundled gems** rather
+than default gems — `rexml`, `minitest`, `csv`, `base64`. They import fine in the dev
+shell and raise `LoadError` under the wrapper. The rule that falls out: `lib/` may require
+default gems and `mail`, and anything else has to enter the `Gemfile` first. That is why
+Atom is assembled from strings instead of with REXML, and it is checked rather than
+remembered — `checks.package` runs the *built* wrapper under `env -i` and drives both
+commands, because the other way to discover it is a `LoadError` in the middle of a
+delivery.
+
+The runtime closure is ~103 MB over 25 store paths, and it is the interpreter almost
+exactly: Ruby and its own dependencies (glibc, OpenSSL, zlib, libyaml, libffi) account for
+all but ~10 MB of it, while this program's own output is ~40 kB of Ruby. `bundix` is not
+in it, and neither are the test suite, the fixtures, the `Makefile` or this file — the
+package builds from a filtered source that is `bin/` and `lib/` and nothing else. The
+copy that lands on a server is therefore the program and the machinery to run it.
+
+### As an input to another flake
+
+This is how it actually gets deployed: Rivendell takes it as an input, exactly the way it
+takes each static site.
+
+```nix
+inputs.mail2rss26 = {
+  url = "git+ssh://git@github.com/swistak35/mail2rss26?ref=main";
+  inputs.nixpkgs.follows = "nixpkgs";
+};
+```
+
+`follows` is not politeness. This flake already pins the same `nixos-26.05` that Rivendell
+does, and letting it resolve its own nixpkgs would put a second revision — and a second
+~100 MB interpreter — into one closure for no benefit.
+
+From Phase 6 the consumer enables `nixosModules.default` and never names the package. Until
+then it is reachable directly, and the shape of the `mda` line is already fixed by the exit
+codes and the recipient matching above:
+
+```nix
+{ pkgs, lib, inputs, ... }:
+let
+  mail2rss26 = inputs.mail2rss26.packages.${pkgs.stdenv.hostPlatform.system}.default;
+in
+{
+  services.opensmtpd.serverConfiguration = ''
+    action "newsletters" mda "${lib.getExe mail2rss26} ingest --recipient %{rcpt}" user mail2rss26
+  '';
+}
+```
+
+Everything else the delivery needs — the state directory, the feed list — comes from
+`/etc/mail2rss26/feeds.json`, which is why that line has one option on it.
+
+**Iterating without committing.** Bumping a lock to try a one-line change is a punishment;
+point the input at the working tree instead.
+
+```bash
+nixos-rebuild switch --flake . --override-input mail2rss26 ~/projs/swistak35/mail2rss26
+```
+
+### What it needs at run time
+
+A config file, a directory it may write to, and nothing else. No network, no listening
+port, no daemon, no database, no state that is not a file under `stateDir`. The user it
+runs as needs write access to that directory and read access to the config; the process
+lives for the length of one delivery and then it is gone.
