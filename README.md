@@ -14,16 +14,21 @@ no login. The retry mechanism is OpenSMTPD's queue, which we get by exiting non-
    SMTP :25                stdin, once per message              static file
 sender ────► OpenSMTPD ──────────────────────────► mail2rss26 ──────────────► nginx ──► reader
                  mda "mail2rss26 ingest              ingest         atom.xml
-                      --recipient %{rcpt}"
+                    --recipient '%{rcpt}'"
 ```
 
 ## Status
 
-**Phase 5 of the plan.** `ingest` works end to end against a local directory — recipient →
-feed, message stored, feed re-rendered, documented exit codes — and the whole thing is now
-packaged: `nix run .#default -- ingest` works from the flake alone, with no dev shell and
-nothing on `PATH`. The NixOS module and the `nixosTest` are Phase 6; nothing here has been
-deployed yet.
+**Phase 6 of the plan, in part.** `ingest` works end to end against a local directory —
+recipient → feed, message stored, feed re-rendered, documented exit codes — the whole
+thing is packaged (`nix run .#default -- ingest` works from the flake alone), and there is
+now a `nixosModules.default` and a `nixosTest`.
+
+**The `nixosTest` has never been executed.** It needs `/dev/kvm`, which the workstation
+does not have. It evaluates, its Python type-checks and lints, every derivation it depends
+on builds, and the `smtpd.conf` it generates is accepted by the real `smtpd -n` — but
+nothing has watched it pass, and nothing here has been deployed. Phase 7 is the first time
+any of this meets a machine.
 
 The plan itself — settled decisions and why, open questions, phase-by-phase TODOs — lives
 in the personal notes repository rather than here. This repository is the program.
@@ -49,10 +54,11 @@ changes nothing rewrites the same bytes and no reader is told anything happened.
 ## Exit codes
 
 **This is a contract, not an implementation detail.** The exit code is the only thing the
-mail system ever learns about a delivery, and OpenSMTPD's reaction to a non-zero one is to
-*keep the message in the queue and try again later*. That is the entire error-handling
-subsystem of this project, obtained for free, and it only works if the codes mean
-something.
+mail system ever learns about a delivery, and it decides whether the message is kept in
+the queue and tried again or given up on. That is the entire error-handling subsystem of
+this project, obtained for free, and it only works if the codes mean something — and if
+they mean the same thing to OpenSMTPD as they do here, which is the subject of the first
+note below.
 
 The numbers are `sysexits(3)`, the vocabulary every sendmail-descended MDA is written
 against.
@@ -64,18 +70,42 @@ against.
 | 65 | `EX_DATAERR` | stdin held no message at all (zero bytes). | **No.** The next attempt hands over the same nothing. |
 | 67 | `EX_NOUSER` | No feed is configured for this recipient, or `--feed` names a feed that does not exist. Nothing was written. | **No.** See below. |
 | 70 | `EX_SOFTWARE` | An exception this program does not classify: a bug. The backtrace is on stderr, which OpenSMTPD copies into the mail log. | **No**, but the message stays queued, so a fix released today can still deliver it. |
-| 74 | `EX_IOERR` | Reading stdin or writing the state directory failed: `ENOSPC`, `EACCES`, `EROFS`, a broken pipe. | **Yes.** This is the one worth deferring for. Empty the disk or fix the mode and the retry succeeds. |
-| 75 | `EX_TEMPFAIL` | Reserved, and never returned. | — |
+| 74 | `EX_IOERR` | Reading stdin or writing the state directory failed: `ENOSPC`, `EACCES`, `EROFS`, a broken pipe. | In principle **yes** — but OpenSMTPD does not defer on this code. See below. |
+| 75 | `EX_TEMPFAIL` | Reserved, and never returned. | It is one of only two codes OpenSMTPD *does* defer on. See below. |
 | 78 | `EX_CONFIG` | The feed list is missing, unreadable, not JSON, or does not satisfy the schema. | **No.** An operator has to fix the file. |
 
 Three notes on how to read that table.
 
-**"Does a retry help" is advice to a human, not a switch.** OpenSMTPD defers on *any*
-non-zero exit; it does not bounce on 67 and defer on 74. So a permanent code means the
-message sits in the queue until it expires or until somebody fixes the thing named — the
-split above tells the operator reading the log which of those two it is going to be. 75 is
-kept unused precisely because it is the number every sendmail-derived agent reads as
-"defer this", and no other meaning in this program may ever be given it.
+**How OpenSMTPD actually reads these numbers — corrected in Phase 6.** Until this phase
+the text here said that OpenSMTPD defers on *any* non-zero exit, and that the "does a
+retry help" column was therefore advice to a human rather than a switch. That was the
+conservative reading, and it is wrong. `smtpd.conf(5)` states the rule and OpenSMTPD
+7.8.0 implements it in `usr.sbin/smtpd/smtpd.c`:
+
+```c
+if (mda_sysexit == EX_OSERR || mda_sysexit == EX_TEMPFAIL)
+        mda_status = MDA_TEMPFAIL;
+else
+        mda_status = MDA_PERMFAIL;
+```
+
+**Exactly two exit codes defer: 71 (`EX_OSERR`) and 75 (`EX_TEMPFAIL`).** Every other
+non-zero status is a *permanent* failure — the envelope leaves the queue and the sender is
+sent a bounce, or, for a null envelope sender, nothing at all. A delivery killed by a
+signal defers. So the column above is a real switch, and this program is currently on the
+wrong side of it in one place:
+
+- **74 does not do what the table promises.** `EX_IOERR` is the single row marked "a retry
+  helps" and it is exactly the row that bounces. A newsletter that arrives while the disk
+  is full would be lost rather than queued, which is the opposite of N3.
+- **Keeping 75 unreturnable costs this program the only word smtpd listens to.** It was
+  reserved because every sendmail-derived agent reads it as "defer this" — which turns out
+  to be true here too, and to be the *only* way to say it.
+
+Changing the codes this program returns is a change to the contract above and to the tests
+that pin it, so Phase 6 records the finding and deliberately does not act on it.
+`nix/vm-test.nix` demonstrates both halves — a 75 that stays in the queue, and a real 67
+from this program that does not — on the day there is a machine to run it on.
 
 **A malformed *message* is never an error.** A newsletter with no `Subject`, a date on the
 32nd of August, two `Subject` headers, a body declared us-ascii that is raw UTF-8, or no
@@ -108,10 +138,16 @@ feed list. The rules, all deliberate:
 - **A full `local@domain` is expected.** A bare local part matches nothing; pass
   `%{rcpt}`.
 - **Anything else simply does not match**, and that is the point. OpenSMTPD sanitises its
-  format specifiers before expanding them — characters it considers suspicious become
-  `:` — so a mangled recipient arrives as something no legal feed address can equal. Keep
-  feed addresses inside `[a-z0-9.-]` and this stays true. A `:` in the recipient makes
-  `ingest` say so in the error, because it is the usual explanation.
+  format specifiers before expanding them — so a mangled recipient arrives as something no
+  legal feed address can equal. Keep feed addresses inside `[a-z0-9.-]` and this stays
+  true. A `:` in the recipient makes `ingest` say so in the error, because it is the usual
+  explanation.
+
+  The substituted set is exact, and worth knowing because the expansion goes into a shell
+  command line: `MAILADDR_ESCAPE` in `smtpd.h` is ``!#$%&'*?`{|}~``, and every one of those
+  characters becomes `:`. Note what is *not* in it — space, `"`, `;`, `\`, `<`, `>`. That
+  is why the `mda` line quotes `'%{rcpt}'`: a single quote can never survive the
+  substitution, so single quotes around it cannot be closed by anything.
 
 ## Configuration: the feed list
 
@@ -163,15 +199,18 @@ them may be derived from another**:
    and show it all as unread. Entry ids are not derived from the feed's id either, for the
    same reason.
 
-### From Nix (Phase 6, sketched here because the schema is a promise)
+### Where the file comes from
 
-```nix
-environment.etc."mail2rss26/feeds.json".text = builtins.toJSON {
-  version = 1;
-  stateDir = "/var/lib/mail2rss26";
-  feeds = config.services.mail2rss26.feeds;
-};
-```
+Nobody writes this file. `nixosModules.default` generates it from
+`services.mail2rss26.feeds` — one `toJSON` of the option, which is the whole reason the
+schema keys feeds by name — and installs it at `/etc/mail2rss26/feeds.json`, the path
+`Config` looks in when nothing overrides it. See "The NixOS module" below.
+
+Everything in it is validated twice: by the module at evaluation time (feed names, empty
+address lists, an address claimed by two feeds) and by `Config` on every delivery. The
+first is the cheap place to find out; the second is the one that has to be right, because
+a feed name becomes a directory and an address decides which feed a stranger's mail lands
+in.
 
 ## State directory
 
@@ -219,20 +258,52 @@ stay, so raising the limit republishes older entries rather than needing them re
 ## Development
 
 ```bash
-make test     # the Minitest suite in the dev shell — the fast loop
-make check    # nix flake check: evaluation plus every check
-make all      # what to run before a commit
+make test        # the Minitest suite in the dev shell — the fast loop
+make check-fast  # the two checks that do not need KVM — what to run before a commit
+make check       # nix flake check: evaluation plus every check, KVM included
+make all         # what to run before a commit
 ```
 
 `make` with no target lists everything. The test suite needs no network, no server and no
 KVM; the fixtures in `test/fixtures/` are real newsletters and are the actual specification
 of this program. Every newsletter that breaks it lands there next to the fix.
 
-`nix flake check` runs two derivations. `checks.tests` is that suite, against the source
-tree. `checks.package` is the other half and answers a question the suite structurally
-cannot: it builds `packages.default` and runs the *packaged* wrapper under `env -i`,
-because the suite runs with the interpreter's own gem directory in reach and a server
-never will — see "Installing" for why that difference is the expensive one.
+`nix flake check` runs three derivations, and one of them is not like the others.
+
+`checks.tests` is that suite, against the source tree. `checks.package` answers a question
+the suite structurally cannot: it builds `packages.default` and runs the *packaged*
+wrapper under `env -i`, because the suite runs with the interpreter's own gem directory in
+reach and a server never will — see "Installing" for why that difference is the expensive
+one. Neither needs KVM and **neither may ever grow a VM**: N5 says the fast loop runs
+without one.
+
+`checks.vm-test` is the `nixosTest` — a real OpenSMTPD, a real SMTP conversation from the
+test driver, and assertions on the `atom.xml` that comes out. It boots a machine, so from
+Phase 6 on **`nix flake check` as a whole needs `/dev/kvm`** and fails without it:
+
+```
+error: ... Reason: missing system features
+       Required features: {kvm, nixos-test}
+```
+
+That message, and specifically the word `kvm`, is how you tell a missing hypervisor from a
+broken check. Without KVM, run the fast pair instead — that is what `make check-fast` is:
+
+```bash
+nix build .#checks.x86_64-linux.tests .#checks.x86_64-linux.package
+```
+
+The evaluation half of `nix flake check` is still worth having on its own, and it does not
+need KVM either:
+
+```bash
+nix eval .#checks.x86_64-linux.vm-test.drvPath   # the test evaluates
+nix build .#checks.x86_64-linux.vm-test.nodes.mail.system.build.toplevel
+```
+
+The second one builds the whole system closure of the machine the test boots, which is
+where module mistakes actually live. Building a NixOS system needs no KVM; only booting
+one does.
 
 Trying it by hand needs a config file and a directory, nothing else:
 
@@ -315,24 +386,93 @@ inputs.mail2rss26 = {
 does, and letting it resolve its own nixpkgs would put a second revision — and a second
 ~100 MB interpreter — into one closure for no benefit.
 
-From Phase 6 the consumer enables `nixosModules.default` and never names the package. Until
-then it is reachable directly, and the shape of the `mda` line is already fixed by the exit
-codes and the recipient matching above:
+The consumer then enables `nixosModules.default` and never names the package again.
+
+## The NixOS module
+
+`nixosModules.default` is deliberately **thin**, and staying thin is the point rather than
+a stage it will grow out of. It covers a system user, a state directory, the generated
+feed list, and the exact command OpenSMTPD should run. The domain, the nginx vhost, the
+ACME entry and the whole of `smtpd.conf` belong to the machine, not to this repository — a
+module that lives in someone else's flake drifts towards being an option framework all by
+itself.
+
+Four options are settable:
+
+| Option | Default | Why it exists |
+| --- | --- | --- |
+| `enable` | `false` | — |
+| `package` | this flake's `packages.default` | The override door. `lib.getExe` reads `mainProgram` off it. |
+| `stateDir` | `/var/lib/mail2rss26` | nginx has to be pointed at it from the other repository, and spelling one path in two flakes is how they drift. |
+| `feeds` | `{ }` | `feeds.json` has to be generated from something, and the schema is an `attrsOf submodule` precisely so this is one `toJSON` and nothing else. Per feed: `title`, `id`, `addresses`, and optionally `url`. |
+
+Three more are **read-only outputs**, not knobs. They exist so the OpenSMTPD configuration
+in the other repository can be written without hard-coding a single string this module
+owns — which is the one failure this module is in a position to prevent, since a
+`feeds.json` and an `smtpd.conf` that disagree are exactly what produces the `EX_NOUSER`
+the table above calls unreachable.
+
+| Output | What it is |
+| --- | --- |
+| `user` | The system user deliveries run as: the `user` keyword on the `action`. |
+| `mdaCommand` | The full `mda` command, absolute path and `'%{rcpt}'` included. |
+| `addresses` | Every configured address, flattened and sorted, for the `smtpd.conf` tables. |
+
+Enabling it also creates `/etc/mail2rss26/feeds.json` (which is `Config::DEFAULT_PATH`,
+which is why the `mda` line carries no `--config`) and a `mail2rss26-render.service`: a
+oneshot that re-renders every feed at boot and whenever the feed list changes. It is what
+makes a brand-new feed a valid empty document the day it is deployed instead of a 404
+until its first newsletter, and it is where a malformed feed list fails loudly — at the
+`nixos-rebuild switch` that introduced it, rather than during a delivery hours later.
+
+### What the machine side looks like
 
 ```nix
-{ pkgs, lib, inputs, ... }:
+{ config, lib, ... }:
 let
-  mail2rss26 = inputs.mail2rss26.packages.${pkgs.stdenv.hostPlatform.system}.default;
+  m2r = config.services.mail2rss26;
 in
 {
-  services.opensmtpd.serverConfiguration = ''
-    action "newsletters" mda "${lib.getExe mail2rss26} ingest --recipient %{rcpt}" user mail2rss26
-  '';
+  services.mail2rss26 = {
+    enable = true;
+    feeds.lamplighter = {
+      title = "The Lamplighter";
+      id = "urn:uuid:6b6c5f2c-9d0e-4a71-8d55-7b1a3e0c4f21";
+      url = "https://feeds.lasocha.net/7c31e9a2b4d8f05e.atom";
+      addresses = [ "weekly.a41f9d@feeds.lasocha.net" ];
+    };
+  };
+
+  services.opensmtpd = {
+    enable = true;
+    serverConfiguration = ''
+      listen on eth0
+
+      table m2r_addresses { ${lib.concatMapStringsSep ", " (a: "\"${a}\"") m2r.addresses} }
+      table m2r_virtual { ${lib.concatMapStringsSep ", " (a: "\"${a}\" = ${m2r.user}") m2r.addresses} }
+
+      action "m2r" mda "${m2r.mdaCommand}" virtual <m2r_virtual> user ${m2r.user}
+      match from any for rcpt-to <m2r_addresses> action "m2r"
+    '';
+  };
 }
 ```
 
+**Both tables are load-bearing and they are not redundant.**
+
+The *list* is what the `match` rule tests. An envelope that matches no rule is refused with
+`550 Invalid recipient` during the dialogue, which is F5 exactly and by number, and it is
+why no message for an unconfigured address is ever queued.
+
+The *mapping* is what OpenSMTPD expands the recipient through. Without it, `smtpd` looks
+the local part up in the system user database and fails, because there is no user called
+`weekly.a41f9d` — `lka_session.c` logs "user-part does not match system user" and the
+recipient is refused. `user mail2rss26` on the action does **not** rescue this: it only
+skips the `.forward` lookup, it does not skip the lookup of the recipient. This is the
+least obvious fact in the whole setup, and it is the reason `nix/vm-test.nix` exists.
+
 Everything else the delivery needs — the state directory, the feed list — comes from
-`/etc/mail2rss26/feeds.json`, which is why that line has one option on it.
+`/etc/mail2rss26/feeds.json`, which is why the `mda` line carries one option.
 
 **Iterating without committing.** Bumping a lock to try a one-line change is a punishment;
 point the input at the working tree instead.

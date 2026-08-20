@@ -15,7 +15,7 @@ PINNED := $(NIX) run --inputs-from . nixpkgs\#
 NIX_FILES := $(filter-out gemset.nix,$(shell git ls-files '*.nix'))
 
 .DEFAULT_GOAL := help
-.PHONY: help all check test gemset fmt fmt-check clean
+.PHONY: help all check check-fast test vm-test gemset fmt fmt-check clean
 
 help: ## Show this help
 	@echo 'mail2rss26 — targets:'
@@ -23,12 +23,26 @@ help: ## Show this help
 		| sed 's/:.*## /\t/' \
 		| awk -F'\t' '{ printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }'
 
-all: check ## Everything that runs without a server — run this before every commit
+all: check-fast ## Everything that runs without KVM — run this before every commit
 
 # --- Tests ------------------------------------------------------------------
 
-check: ## Evaluate the flake and run every check (the Minitest suite; later the nixosTest)
+# Since Phase 6 `nix flake check` includes the nixosTest, which boots a machine
+# and therefore needs /dev/kvm. On a workstation without it this fails with
+# "missing system features / Required features: {kvm, nixos-test}" — a missing
+# hypervisor, not a broken check.
+check: ## Evaluate the flake and run every check, nixosTest included (needs KVM)
 	$(NIX) flake check
+
+# N5: the fast loop must stay runnable without KVM, so it has its own target
+# rather than being "the bits of make check that happened to work".
+check-fast: ## Run only the checks that do not need KVM (the suite and the packaged wrapper)
+	$(NIX) build --no-link .#checks.x86_64-linux.tests .#checks.x86_64-linux.package
+
+# The nixosTest on its own, for when KVM is available and the fast loop is green.
+# As of Phase 6 this has never been run — there is no /dev/kvm on this machine.
+vm-test: ## Run just the nixosTest (needs KVM)
+	$(NIX) build --no-link .#checks.x86_64-linux.vm-test
 
 # The fast loop. Same interpreter and same gems as `make check`, without the
 # copy into the store — this is the one to run while writing code.

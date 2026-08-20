@@ -128,6 +128,12 @@
         default = packageFor pkgs;
       });
 
+      # The system user, the state directory, the feed list and the exact
+      # command OpenSMTPD is supposed to run — and nothing else. Phase 6 kept it
+      # to four settable options on purpose; the reasoning, and what a consumer
+      # is expected to write around it, is at the top of nix/module.nix.
+      nixosModules.default = import ./nix/module.nix { inherit self; };
+
       devShells = forAllSystems (pkgs: {
         default =
           let
@@ -158,10 +164,20 @@
           };
       });
 
+      # Three checks, and one of them is not like the others.
+      #
+      # `tests` and `package` are plain derivations and stay that way: N5 says
+      # the fast loop runs without KVM, and that property is worth more than the
+      # tidiness of having `nix flake check` be the single command. Neither of
+      # them may ever grow a VM.
+      #
+      # `vm-test` boots a machine, so from this phase on `nix flake check` as a
+      # whole needs /dev/kvm and fails without it — with a "required system
+      # feature" error naming kvm, which is how you tell that apart from a
+      # broken check. The fast pair is `make check-fast`; see the README.
       checks = forAllSystems (pkgs: {
         # The fast loop: the Minitest suite as a plain derivation, so it runs
-        # without KVM (N5). The nixosTest — the one check that does need KVM —
-        # joins these in Phase 6.
+        # without KVM (N5).
         tests =
           let
             ruby = rubyFor pkgs;
@@ -233,6 +249,15 @@
 
             touch $out
           '';
+
+        # The only check that speaks SMTP, and the only one that needs KVM: a
+        # real OpenSMTPD in a real machine, a message sent from the test driver
+        # over a real socket, and assertions on the atom.xml that comes out.
+        # It is also where the plan's open question about `%{rcpt}` gets
+        # answered by observation rather than by reading a manual page.
+        #
+        # As of Phase 6 it has never been run — see the banner in the file.
+        vm-test = import ./nix/vm-test.nix { inherit self pkgs; };
       });
     };
 }
