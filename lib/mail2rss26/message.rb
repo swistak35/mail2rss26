@@ -42,9 +42,10 @@ module Mail2rss26
     # the same mailbox render differently on every run and break N6. The order
     # is Date header, then the timestamp our own OpenSMTPD stamped into the
     # topmost Received header (it is part of the stored .eml, so it is as
-    # deterministic as the file), then this epoch. An entry dated 1970 sorts to
-    # the bottom of a reader and is visibly wrong, which is what we want from a
-    # message that told us nothing at all.
+    # deterministic as the file), then the caller's fallback_date, then this
+    # epoch. An entry dated 1970 sorts to the bottom of a reader and is visibly
+    # wrong, which is what we want from a message that told us nothing at all —
+    # and is why Phase 4 supplies a fallback ahead of it.
     EPOCH = Time.at(0).utc.freeze
 
     # Last resort for bytes no declared charset explains. Windows-1252 maps
@@ -52,18 +53,27 @@ module Mail2rss26
     # message; it can only make it ugly.
     SALVAGE_CHARSET = Encoding::WINDOWS_1252
 
-    def self.read(path)
-      new(Mail.read(path))
+    def self.read(path, fallback_date: nil)
+      new(Mail.read(path), fallback_date: fallback_date)
     end
 
-    def self.parse(source)
-      new(Mail.read_from_string(source))
+    def self.parse(source, fallback_date: nil)
+      new(Mail.read_from_string(source), fallback_date: fallback_date)
     end
 
     attr_reader :mail
 
-    def initialize(mail)
+    # `fallback_date` is a date the *caller* knows and the message does not, and
+    # it is consulted only when the message dated itself nowhere. Phase 4 has
+    # two of them and they are the same instant seen twice: at delivery it is
+    # the clock (the only source there is, once), and at render time it is that
+    # same moment read back out of the stored filename. Which is what keeps N6
+    # true — a render never asks the clock anything.
+    def initialize(mail, fallback_date: nil)
       @mail = mail
+      # Accepts a Time or a DateTime and ignores anything that is neither, for
+      # the same reason to_time exists at all: this class does not raise.
+      @fallback_date = to_time(fallback_date)
     end
 
     # F4: the entry title.
@@ -91,7 +101,7 @@ module Mail2rss26
 
     # F4: the entry date, always UTC, always present. See EPOCH.
     def date
-      header_date || received_date || EPOCH
+      header_date || received_date || @fallback_date || EPOCH
     end
 
     # The stable half of the Atom entry id and the key F6 dedups on. A message

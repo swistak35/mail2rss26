@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "mail2rss26/message"
+require "mail2rss26/store"
 
 module Mail2rss26
   # A directory of .eml files, rendered to one Atom document (F2) and written
@@ -89,11 +90,21 @@ module Mail2rss26
     # messages". That is N3: an absent feed directory is our side being wrong,
     # not a newsletter being ugly, and it must not render an empty feed over a
     # feed that was fine yesterday.
+    #
+    # Each message is given the timestamp out of its own filename as a fallback
+    # date. Phase 2 left a message with neither a Date nor a Received header
+    # sitting in 1970, visibly wrong and at the bottom of every reader; the
+    # delivery timestamp `ingest` wrote into the name is strictly better and
+    # costs nothing, because it is *state on disk* — read from the same bytes
+    # every render, so N6 is untouched. Nothing here ever asks the clock.
     def self.from_directory(dir, id:, title:, self_url: nil)
-      paths = Dir.children(dir).grep(/\.eml\z/).sort.map { |name| File.join(dir, name) }
+      names = Dir.children(dir).grep(/\.eml\z/).sort
 
-      new(id: id, title: title, self_url: self_url,
-          messages: paths.map { |path| Message.read(path) })
+      messages = names.map do |name|
+        Message.read(File.join(dir, name), fallback_date: Store.timestamp_of(name))
+      end
+
+      new(id: id, title: title, self_url: self_url, messages: messages)
     end
 
     # The messages that actually become entries: deduplicated (F6), newest
@@ -131,35 +142,12 @@ module Mail2rss26
       xml
     end
 
-    # N4. The rename is the atomic step, and it is only atomic within one
-    # filesystem, so the temporary file is a sibling of the target rather than
-    # anything under /tmp. fsync before the rename because rename orders the
-    # directory entry, not the data behind it: without it a crash can leave a
-    # correctly named file full of zeroes, which is exactly the half-written
-    # feed N4 exists to prevent. The directory itself is synced after, so the
-    # rename survives the same crash.
-    #
-    # The temporary name carries the pid: OpenSMTPD may well run two deliveries
-    # at once, and a shared scratch file would let them interleave into one
-    # corrupt document before either got as far as renaming.
+    # N4, and it moved: the write-then-rename dance lives in Store, because
+    # Phase 4 does it to the stored .eml as well and one copy of that reasoning
+    # (and of the fsync it is easy to leave out) is the right number. Nothing
+    # about the guarantee changed — see Store.write_atomically.
     def write(path)
-      tmp = "#{path}.#{Process.pid}.tmp"
-      begin
-        File.open(tmp, File::WRONLY | File::CREAT | File::TRUNC, 0o644) do |file|
-          file.write(to_atom)
-          file.flush
-          file.fsync
-        end
-        File.rename(tmp, path)
-        File.open(File.dirname(path)) { |dir| dir.fsync }
-      ensure
-        # Only reached when something above raised; after a successful rename
-        # there is nothing at this name any more. The exception itself is not
-        # touched — a feed we failed to write is our side failing, and N3 wants
-        # it loud and non-zero.
-        File.unlink(tmp) if File.exist?(tmp)
-      end
-      path
+      Store.write_atomically(path, to_atom)
     end
 
     private

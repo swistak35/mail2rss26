@@ -371,6 +371,37 @@ class FeedTest < Minitest::Test
 
   # --- reading a directory --------------------------------------------------
 
+  # Phase 4's improvement on 1970, from the renderer's side: the timestamp
+  # `ingest` wrote into the filename is handed to each message as its fallback
+  # date. It is state on disk, so a render still asks the clock nothing (N6) —
+  # this is the one place the two halves of that mechanism meet.
+  def test_a_dateless_message_is_dated_from_its_filename
+    Dir.mktmpdir do |dir|
+      delivered = Time.utc(2026, 8, 20, 9, 15, 42)
+      name = Mail2rss26::Store.filename(delivered, "sha256:#{"ab" * 32}")
+      File.binwrite(File.join(dir, name), File.binread(fixture_path("ugly-no-subject-no-date.eml")))
+
+      feed = Mail2rss26::Feed.from_directory(dir, id: FEED_ID, title: FEED_TITLE)
+
+      assert_equal delivered, feed.entries.first.date
+      assert_equal "2026-08-20T09:15:42Z", text_of(entries_of(parse(feed.to_atom)).first, "updated")
+    end
+  end
+
+  # A file this program did not name — copied in by hand, or restored from an
+  # archive that predates the convention — has no timestamp to read, and is
+  # dated exactly as it was before Phase 4 rather than refused.
+  def test_a_foreign_filename_falls_all_the_way_back_to_the_epoch
+    Dir.mktmpdir do |dir|
+      File.binwrite(File.join(dir, "some-newsletter.eml"),
+                    File.binread(fixture_path("ugly-no-subject-no-date.eml")))
+
+      feed = Mail2rss26::Feed.from_directory(dir, id: FEED_ID, title: FEED_TITLE)
+
+      assert_equal Mail2rss26::Message::EPOCH, feed.entries.first.date
+    end
+  end
+
   def test_from_directory_reads_every_eml_and_nothing_else
     Dir.mktmpdir do |dir|
       copy_fixtures_into(dir)

@@ -159,6 +159,40 @@ class MessageTest < Minitest::Test
     assert_equal parsed_fixture("ugly-no-subject-no-date.eml").date, m.date
   end
 
+  # --- fallback_date, which is Phase 4 improving on 1970 --------------------
+  # The caller may know something the message does not. Phase 4 passes the
+  # delivery timestamp out of the stored filename, so a newsletter that dated
+  # itself nowhere is dated when it arrived instead of sorting to the bottom of
+  # the reader forever. It is still not a clock: it is state on disk, read back
+  # the same way on every render.
+
+  def test_a_caller_supplied_date_beats_the_epoch
+    delivered = Time.utc(2026, 8, 20, 11, 22, 33)
+    assert_equal delivered, dated("ugly-no-subject-no-date.eml", delivered)
+  end
+
+  # It is a *fallback*, not an override: a message that dated itself keeps its
+  # own date, or the delivery order of a mailbox would silently replace the
+  # publication order a reader is sorting on.
+  def test_a_caller_supplied_date_never_beats_the_message
+    delivered = Time.utc(2026, 8, 20, 11, 22, 33)
+
+    assert_equal Time.utc(2026, 8, 12, 6, 3, 16), dated("simple-multipart.eml", delivered)
+    # Including when the date came from Received rather than from a Date header
+    # this program could believe.
+    assert_equal Time.utc(2026, 8, 17, 2, 31, 9), dated("ugly-lying-charset.eml", delivered)
+  end
+
+  def test_a_fallback_date_that_is_not_a_time_is_ignored_rather_than_raised
+    assert_equal Mail2rss26::Message::EPOCH, dated("ugly-no-subject-no-date.eml", "yesterday")
+  end
+
+  # The same read the renderer does: bytes as they are on disk, plus whatever
+  # the filename said.
+  def dated(name, fallback)
+    Mail2rss26::Message.parse(File.binread(fixture_path(name)), fallback_date: fallback).date
+  end
+
   def test_an_unparseable_from_degrades_to_what_the_header_said
     m = parsed_fixture("ugly-no-subject-no-date.eml")
 
