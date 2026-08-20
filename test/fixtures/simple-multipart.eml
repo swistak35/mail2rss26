@@ -1,0 +1,97 @@
+Return-Path: <bounce-8827.a41f9d@mail.lamplighter.example>
+Received: from mail-out-3.lamplighter.example (mail-out-3.lamplighter.example [198.51.100.24])
+	by feeds.lasocha.net (OpenSMTPD) with ESMTPS id 3b8f1c02
+	(TLS: TLSv1.3:TLS_AES_256_GCM_SHA384:256:NO)
+	for <weekly.a41f9d@feeds.lasocha.net>;
+	Tue, 12 Aug 2026 08:03:17 +0200 (CEST)
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=lamplighter.example;
+	s=k1; t=1786593796; bh=Xn9r7yq0M0i1nDqZ0m0oS4b1H1a2m4rB9m1a2H3k4Q8=;
+	h=From:To:Subject:Date:List-Unsubscribe;
+	b=U2ltcGxpZmllZCBmaXh0dXJlIHNpZ25hdHVyZSwgbm90IGEgcmVhbCBvbmUu
+From: The Lamplighter <newsletter@lamplighter.example>
+To: weekly.a41f9d@feeds.lasocha.net
+Subject: Issue 42: The quiet parts of a slow web
+Date: Tue, 12 Aug 2026 06:03:16 +0000
+Message-ID: <20260812060316.4c1b9a7e@mail.lamplighter.example>
+List-Id: The Lamplighter <newsletter.lamplighter.example>
+List-Unsubscribe: <https://lamplighter.example/u/a41f9d>, <mailto:unsubscribe+a41f9d@lamplighter.example>
+List-Unsubscribe-Post: List-Unsubscribe=One-Click
+Precedence: bulk
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="=_lamplighter_42_b0a1c2d3"
+
+This is a message in MIME format. Your mail reader should not be showing it.
+
+--=_lamplighter_42_b0a1c2d3
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+THE LAMPLIGHTER =E2=80=94 ISSUE 42
+The quiet parts of a slow web
+
+Hello again,
+
+This week I went looking for the pages that never ask you to do anything: n=
+o banner, no cookie wall, no "subscribe to keep reading" halfway down. They=
+ turn out to be easier to find than the complaining suggests, and most of t=
+hem are older than the complaint.
+
+  1. A directory of hand-written pages, sorted by nothing at all.
+  2. Why a personal site does not need a build step (but mine has one).
+  3. Three feeds worth adding to a reader you actually open.
+
+Reply if you have a page in mind; I read everything, slowly.
+
+=E2=80=94 M.
+
+--
+You are receiving this because you signed up at lamplighter.example.
+Unsubscribe: https://lamplighter.example/u/a41f9d
+
+--=_lamplighter_42_b0a1c2d3
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset=3D"utf-8">
+    <title>Issue 42: The quiet parts of a slow web</title>
+  </head>
+  <body style=3D"margin:0;padding:24px;font-family:Georgia,serif;color:#222=
+;">
+    <p style=3D"text-transform:uppercase;letter-spacing:.08em;font-size:12p=
+x;color:#777;">
+      The Lamplighter =E2=80=94 Issue 42
+    </p>
+    <h1 style=3D"font-size:24px;margin:0 0 16px;">The quiet parts of a slow=
+ web</h1>
+
+    <p>Hello again,</p>
+
+    <p>This week I went looking for the pages that never ask you to do anyt=
+hing: no banner, no cookie wall, no &ldquo;subscribe to keep reading&rdquo;=
+ halfway down. They turn out to be easier to find than the complaining sugg=
+ests, and most of them are older than the complaint.</p>
+
+    <ol>
+      <li>A directory of hand-written pages, sorted by nothing at all.</li>
+      <li>Why a personal site does not need a build step (but mine has one)=
+.</li>
+      <li>Three feeds worth adding to a reader you actually open.</li>
+    </ol>
+
+    <p>Reply if you have a page in mind; I read everything, slowly.</p>
+
+    <p>=E2=80=94 M.</p>
+
+    <hr style=3D"border:none;border-top:1px solid #ddd;margin:24px 0;">
+    <p style=3D"font-size:12px;color:#777;">
+      You are receiving this because you signed up at lamplighter.example.<=
+br>
+      <a href=3D"https://lamplighter.example/u/a41f9d">Unsubscribe</a>
+    </p>
+  </body>
+</html>
+
+--=_lamplighter_42_b0a1c2d3--

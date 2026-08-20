@@ -1,0 +1,14 @@
+# nix build outputs
+result
+result-*
+
+# bundler leftovers — gems come from the flake, never from vendor/
+.bundle
+vendor/bundle
+
+# editor leftovers
+*~
+.#*
+\#*#
+
+.envrc
