@@ -20,7 +20,8 @@ sender ────► OpenSMTPD ───────────────�
 ## Status
 
 **Phase 6 of the plan, in part.** `ingest` works end to end against a local directory —
-recipient → feed, message stored, feed re-rendered, documented exit codes — the whole
+recipient → feed, message stored, feed re-rendered, an exit-code contract written against
+what OpenSMTPD does with the number rather than what `sysexits(3)` calls it — the whole
 thing is packaged (`nix run .#default -- ingest` works from the flake alone), and there is
 now a `nixosModules.default` and a `nixosTest`.
 
@@ -54,71 +55,135 @@ changes nothing rewrites the same bytes and no reader is told anything happened.
 ## Exit codes
 
 **This is a contract, not an implementation detail.** The exit code is the only thing the
-mail system ever learns about a delivery, and it decides whether the message is kept in
-the queue and tried again or given up on. That is the entire error-handling subsystem of
-this project, obtained for free, and it only works if the codes mean something — and if
-they mean the same thing to OpenSMTPD as they do here, which is the subject of the first
-note below.
+mail system ever learns about a delivery, and it is not a comment in the log — it is an
+*instruction*. It decides whether the message is kept in the queue and tried again or
+thrown away and bounced. That is the entire error-handling subsystem of this project,
+obtained for free, and it only works if the codes say what we mean.
 
-The numbers are `sysexits(3)`, the vocabulary every sendmail-descended MDA is written
-against.
+### What OpenSMTPD does with the number
 
-| Code | `sysexits.h` | What happened | Does a retry help? |
-| ---: | --- | --- | --- |
-| 0 | `EX_OK` | Message stored and the feed re-rendered. Also the answer for a message we already had. | — |
-| 64 | `EX_USAGE` | The command line is wrong — a missing `--recipient`, an unknown option. | **No.** The `mda` line in `smtpd.conf` needs editing. |
-| 65 | `EX_DATAERR` | stdin held no message at all (zero bytes). | **No.** The next attempt hands over the same nothing. |
-| 67 | `EX_NOUSER` | No feed is configured for this recipient, or `--feed` names a feed that does not exist. Nothing was written. | **No.** See below. |
-| 70 | `EX_SOFTWARE` | An exception this program does not classify: a bug. The backtrace is on stderr, which OpenSMTPD copies into the mail log. | **No**, but the message stays queued, so a fix released today can still deliver it. |
-| 74 | `EX_IOERR` | Reading stdin or writing the state directory failed: `ENOSPC`, `EACCES`, `EROFS`, a broken pipe. | In principle **yes** — but OpenSMTPD does not defer on this code. See below. |
-| 75 | `EX_TEMPFAIL` | Reserved, and never returned. | It is one of only two codes OpenSMTPD *does* defer on. See below. |
-| 78 | `EX_CONFIG` | The feed list is missing, unreadable, not JSON, or does not satisfy the schema. | **No.** An operator has to fix the file. |
-
-Three notes on how to read that table.
-
-**How OpenSMTPD actually reads these numbers — corrected in Phase 6.** Until this phase
-the text here said that OpenSMTPD defers on *any* non-zero exit, and that the "does a
-retry help" column was therefore advice to a human rather than a switch. That was the
-conservative reading, and it is wrong. `smtpd.conf(5)` states the rule and OpenSMTPD
-7.8.0 implements it in `usr.sbin/smtpd/smtpd.c`:
+Everything below follows from twenty lines of OpenSMTPD 7.8.0, `usr.sbin/smtpd/smtpd.c`:
 
 ```c
-if (mda_sysexit == EX_OSERR || mda_sysexit == EX_TEMPFAIL)
-        mda_status = MDA_TEMPFAIL;
-else
-        mda_status = MDA_PERMFAIL;
+if (WIFSIGNALED(status)) {
+        mda_status = MDA_TEMPFAIL;      /* killed by a signal → defer */
+} else if (WIFEXITED(status)) {
+        if (WEXITSTATUS(status) != 0) {
+                mda_sysexit = WEXITSTATUS(status);
+                if (mda_sysexit == EX_OSERR || mda_sysexit == EX_TEMPFAIL)
+                        mda_status = MDA_TEMPFAIL;   /* 71 or 75 → defer */
+                else
+                        mda_status = MDA_PERMFAIL;   /* everything else → bounce */
+        }
+}
 ```
 
-**Exactly two exit codes defer: 71 (`EX_OSERR`) and 75 (`EX_TEMPFAIL`).** Every other
-non-zero status is a *permanent* failure — the envelope leaves the queue and the sender is
-sent a bounce, or, for a null envelope sender, nothing at all. A delivery killed by a
-signal defers. So the column above is a real switch, and this program is currently on the
-wrong side of it in one place:
+**Only two exit codes defer: 71 (`EX_OSERR`) and 75 (`EX_TEMPFAIL`).** Every other
+non-zero status is a *permanent* failure: the envelope leaves the queue, the sender gets a
+bounce, and the newsletter is gone. A delivery killed by a signal defers.
 
-- **74 does not do what the table promises.** `EX_IOERR` is the single row marked "a retry
-  helps" and it is exactly the row that bounces. A newsletter that arrives while the disk
-  is full would be lost rather than queued, which is the opposite of N3.
-- **Keeping 75 unreturnable costs this program the only word smtpd listens to.** It was
-  reserved because every sendmail-derived agent reads it as "defer this" — which turns out
-  to be true here too, and to be the *only* way to say it.
+That is the whole of it, and it is worth sitting with, because the obvious way to choose an
+exit code — reach for the `sysexits(3)` value that best *describes* what went wrong — is
+wrong here, and this program did it. Until Phase 6 the table below claimed that smtpd
+deferred on any non-zero exit and that the numbers were advice to whoever read the log.
+Under that assumption `74` (`EX_IOERR`) was the row documented as "a retry helps" — and it
+was precisely the row that destroyed a newsletter, because a full disk bounced the mail
+instead of queueing it. N3 says "an error is a non-zero exit; the message stays in
+OpenSMTPD's queue and is not lost". It did not.
 
-Changing the codes this program returns is a change to the contract above and to the tests
-that pin it, so Phase 6 records the finding and deliberately does not act on it.
-`nix/vm-test.nix` demonstrates both halves — a 75 that stays in the queue, and a real 67
-from this program that does not — on the day there is a machine to run it on.
+**Where an informative code and correct behaviour conflict, behaviour wins.** The
+description goes on stderr, which smtpd copies into the mail log and into the bounce, and
+which is the only bug report a delivery ever files. Nobody has ever debugged anything from
+a bare `78` that they could not have debugged from a line of English. The sysexits
+vocabulary is real and it is tempting and it fits in a table beautifully; it just cannot be
+used to *speak*, because smtpd only understands two words. **Do not tidy these numbers back
+into prettiness.**
 
-**A malformed *message* is never an error.** A newsletter with no `Subject`, a date on the
-32nd of August, two `Subject` headers, a body declared us-ascii that is raw UTF-8, or no
-body at all is stored and rendered. Refusing it would fix nothing and would park the
-newsletter in the queue forever; an entry titled "(no subject)" is strictly better than a
-message that never arrives. Non-zero is reserved for *our* side failing: unreadable stdin,
-an unwritable state directory, bytes that are not a message.
+### The table
+
+The question each row answers is not "what kind of failure is this?" but **"must this
+message survive?"** — that is, would a corrected system (a fixed `feeds.json`, a fixed
+`mda` line, a disk with room on it, a bug fix released this afternoon) deliver this exact
+envelope? If yes, the answer is 75 and nothing else.
+
+| Code | What happened | smtpd does | Why |
+| ---: | --- | --- | --- |
+| 0 | Message stored and the feed re-rendered. Also the answer for a message we already had. | delivered | — |
+| 67 | No feed is configured for this recipient, or `--feed` names a feed that does not exist. Nothing was written. | **bounce** | There is no feed and there is not going to be one. See below. |
+| 75 | Anything else that went wrong: a broken `mda` line, an unreadable or invalid feed list, `ENOSPC` / `EROFS` / `EACCES` on the state directory, a broken pipe, zero bytes on stdin, an unclassified exception. | **defer** | Somebody can fix it, and the queue holds the newsletter until they do. |
+
+Three codes, and that is the entire list. The reasoning per condition:
+
+- **A broken `mda` command line** (a renamed option, a missing `--recipient`, a mistyped
+  command word) was `64`. It defers now. It is permanent only in the sense that it will
+  never fix *itself*; an operator edits `smtpd.conf`, and the queue then delivers
+  everything that arrived meanwhile. Bouncing gave zero recovery window, and the symptom of
+  a bouncing `mda` line is *the absence of mail*, which is the single hardest thing to
+  notice. Deferring is not silent: `smtpctl show queue` stops being empty and the message
+  is in the mail log once per delivery.
+- **An unreadable or invalid feed list** was `78`, and it is the same shape of problem one
+  file over. The envelope that hit it was accepted at SMTP time because `smtpd.conf` said
+  the address was good — and `smtpd.conf` and `feeds.json` come from the same Nix option —
+  so a corrected file delivers it. This is the "OpenSMTPD's queue is our retry mechanism"
+  payoff being collected rather than described.
+- **Transient I/O** was `74`, which is the bug this contract was rewritten to fix. A
+  newsletter arriving while the disk is full now stays queued and lands after the cleanup.
+- **Zero bytes on stdin** was `65`, on the reasoning that "the next attempt hands over the
+  same nothing". That reasoning does not survive contact with SMTP: a queued message cannot
+  be zero bytes, because `DATA` carries headers and smtpd stamps a `Received:` of its own
+  on top of them. Zero bytes on stdin therefore never means "this envelope is empty" — it
+  means the pipe between the queue and this process is broken, while the queue file still
+  holds a whole newsletter. Bouncing would discard a message on the strength of evidence
+  about our own plumbing.
+- **An unclassified exception** was `70`, and it is the one row where the choice is a
+  judgement rather than a deduction. A crash we did not classify may well be deterministic
+  in the bytes of this particular newsletter, in which case every retry crashes identically
+  and the envelope expires in a few days — deferring bought nothing but noise, and the
+  message is lost anyway, later and more loudly. But that is not knowable from inside the
+  crash, and the two ways of being wrong do not cost the same. Defer a genuinely permanent
+  crash: four days of queue, then the bounce that would have happened immediately. Bounce a
+  crash that gets fixed this afternoon: the newsletter is gone, unrecoverably, while the
+  fix sits there. Undecidable plus asymmetric costs is exactly the situation N3 exists for,
+  and "a swallowed exception is a lost newsletter" is a convention of this project — a
+  bounce is the loudest possible way of swallowing one. It defers.
+- **71 (`EX_OSERR`) is not used.** It defers identically to 75 and would be marginally more
+  descriptive for the I/O cases. It is left out because a second defer code buys no
+  behaviour at all, only the *appearance* of a taxonomy — and it was that appearance which
+  made returning `74` look reasonable in the first place. One defer code cannot drift.
+
+### Where the line is
+
+The table has one bounce in it, and that is a finding rather than an oversight: this
+program has exactly one failure mode that no operator action can make deliverable. The
+test for any condition added later is the same question — *would a corrected system deliver
+this exact envelope?* — and if the answer is yes, it defers.
+
+The cost of that line is real and should be stated: a permanently broken `mda` line now
+retries until the queue expires the envelope (OpenSMTPD's default is four days) rather than
+failing immediately. What it buys is that every one of those four days is a day the mail
+can still be saved. The failure mode it replaces was losing the mail at once.
 
 **`EX_NOUSER` should be unreachable in production.** An address that belongs to no feed is
 supposed to be refused with a 550 during the SMTP dialogue, by the same feed list that
-generated `smtpd.conf`. Reaching `ingest` with one means the two have drifted apart, so
-the message says so and names the config file. There is no catch-all feed and there is not
-going to be one.
+generated `smtpd.conf`. Reaching `ingest` with one means the two have drifted apart, so the
+message says so and names the config file. A bounce is right here: there is no feed, there
+is not going to be one — there is no catch-all and no sign-up — and deferring would only
+retry until the queue expired it, which is the same bounce four days later plus four days
+of pointless attempts. The realistic drift is a feed being *removed* while its address
+lingers in `smtpd.conf`, and telling the sender is the correct outcome for that.
+
+`nix/vm-test.nix` pins both halves against a real OpenSMTPD — a delivery that bounces
+because the recipient has no feed, and a delivery that stays in the queue because this
+program returned 75 — on the day there is a machine to run it on. `test/ingest_test.rb`
+pins the property itself, without KVM, in
+`test_a_transient_io_failure_exits_with_a_code_opensmtpd_will_defer`.
+
+**A malformed *message* is never an error.** A newsletter with no `Subject`, a date on the
+32nd of August, two `Subject` headers, a body declared us-ascii that is raw UTF-8, or no
+body at all is stored and rendered — exit 0. Refusing it would fix nothing and would park
+the newsletter in the queue until it expired; an entry titled "(no subject)" is strictly
+better than a message that never arrives. Non-zero is reserved for *our* side failing: a
+broken pipe, an unwritable state directory, a feed list that will not load.
 
 ## Matching a recipient to a feed
 
@@ -349,7 +414,8 @@ Two things about that wrapper are load-bearing rather than incidental.
 **It `exec`s the interpreter**, so the Ruby process replaces the shell and *its* exit code
 is what OpenSMTPD reads. The table above is the entire error-handling design; a wrapper
 that returned a status of its own would quietly turn a deferred delivery into a discarded
-one. There is a check that a `67` still arrives as a `67`.
+one. `checks.package` asserts that a `67` still arrives as a `67` and that a state
+directory the delivery cannot write to still arrives as a `75`.
 
 **`GEM_PATH` is set, not extended**, and it names the bundled gems only. This is the one
 sharp edge in packaging Ruby with Nix and it has now cut twice: setting `GEM_PATH` at all

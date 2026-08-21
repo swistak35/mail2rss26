@@ -17,8 +17,9 @@ module Mail2rss26
   # stranger's mail lands in, so "the generator would never do that" is not a
   # thing worth being wrong about once.
   class Config
-    # Anything wrong with the file itself. The CLI turns this into EX_CONFIG
-    # (78) — an operator has to fix it and no amount of retrying will.
+    # Anything wrong with the file itself. The CLI turns this into a deferral
+    # (75): an operator has to fix the file, and the queue is what holds the
+    # newsletters that arrived while it was broken.
     class Error < StandardError; end
 
     # Bumped only if the shape changes incompatibly, so an old module and a new
@@ -76,8 +77,9 @@ module Mail2rss26
         parse(File.read(path), path)
       rescue SystemCallError => e
         # Missing, unreadable, a directory: all the same to the operator, and
-        # all EX_CONFIG rather than EX_IOERR. The message a newsletter is
-        # deferred over should name the file that has to change.
+        # all Config::Error rather than a bare SystemCallError. Both defer, so
+        # the distinction is no longer in the exit code — it is in this message,
+        # which is why the message has to name the file that must change.
         raise Error, "cannot read config #{path}: #{e.message}"
       end
 

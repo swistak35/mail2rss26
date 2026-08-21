@@ -25,6 +25,13 @@ class IngestTest < Minitest::Test
   WEEKLY = "weekly.a41f9d@feeds.lasocha.net"
   OKAZJE = "okazje.3f1c@feeds.lasocha.net"
 
+  # The two numbers OpenSMTPD reads as "keep this envelope and try again",
+  # straight out of smtpd.c: EX_OSERR and EX_TEMPFAIL. Every other non-zero
+  # status is MDA_PERMFAIL — a bounce, and a newsletter that is gone. N3 is a
+  # statement about *this set*, not about non-zero-ness, so the tests below
+  # assert membership of it rather than a particular number.
+  DEFERRING = [71, 75].freeze
+
   def setup
     @tmp = Dir.mktmpdir("mail2rss26-ingest")
     @state = File.join(@tmp, "state")
@@ -114,6 +121,10 @@ class IngestTest < Minitest::Test
 
     assert_equal 67, code
     assert_equal Mail2rss26::CLI::EX_NOUSER, code
+    # And it is the one failure this program deliberately keeps on the bounce
+    # side of the line: there is no feed, there is not going to be one, and
+    # deferring would only retry until the queue expired the envelope.
+    refute_includes DEFERRING, code, "an unknown recipient must not defer"
     assert_includes err, "no feed is configured"
     assert_includes err, "nothing was written"
     # Not one directory, not one byte. F5 wanted this refused at SMTP time
@@ -202,28 +213,40 @@ class IngestTest < Minitest::Test
 
   # --- our own side failing (N3) -------------------------------------------
 
-  def test_nothing_on_stdin_is_a_data_error
+  # A message delivered over SMTP cannot be zero bytes — DATA carries headers
+  # and smtpd stamps a Received: on top of them — so zero bytes here never mean
+  # "the envelope is empty", they mean the pipe between the queue and this
+  # process is broken while the queue file still holds a whole newsletter.
+  def test_nothing_on_stdin_defers_because_the_queue_still_has_the_message
     code, _out, err = run_cli("ingest", "--recipient", WEEKLY, "--config", @config,
                               stdin: StringIO.new(""))
 
-    assert_equal Mail2rss26::CLI::EX_DATAERR, code
+    assert_includes DEFERRING, code
     assert_includes err, "nothing on stdin"
     assert_empty Dir.children(@state)
   end
 
+  # N3, stated as the property rather than as a number, and the reason this
+  # file exists in the shape it does.
+  #
   # The classic operational failure: the state directory is not writable by the
-  # user OpenSMTPD runs the delivery as. It must be loud, non-zero and
-  # temporary — the message stays in the queue and the retry after the chmod
-  # succeeds — and it must not leave a half-built feed behind.
-  def test_an_unwritable_state_directory_defers_the_message
+  # user OpenSMTPD runs the delivery as, or the disk is full, or the filesystem
+  # went read-only. The newsletter must survive it — which means the exit code
+  # has to be one OpenSMTPD *defers* on, and only 71 and 75 are. This program
+  # used to answer 74 (EX_IOERR) here, the most descriptive number available
+  # and a MDA_PERMFAIL: the one failure documented as "a retry helps" was the
+  # one that bounced the mail. If a later edit swaps 75 back for something
+  # informative, this test fails instead of the mail quietly disappearing.
+  def test_a_transient_io_failure_exits_with_a_code_opensmtpd_will_defer
     skip "root ignores the mode bits" if Process.uid.zero?
 
     File.chmod(0o500, @state)
     code, _out, err = ingest(WEEKLY, "simple-multipart.eml")
 
-    assert_equal Mail2rss26::CLI::EX_IOERR, code
-    assert_equal 74, code
+    assert_includes DEFERRING, code,
+                    "exit #{code} is MDA_PERMFAIL to smtpd — the newsletter would bounce, not queue"
     assert_includes err, "Permission denied"
+    # And nothing half-written for the retry to trip over.
     assert_empty Dir.children(@state)
   end
 
@@ -236,17 +259,48 @@ class IngestTest < Minitest::Test
 
     code, _out, err = ingest(WEEKLY, "simple-multipart.eml")
 
-    assert_equal Mail2rss26::CLI::EX_IOERR, code
+    assert_includes DEFERRING, code
     refute_empty err
   end
 
-  def test_a_malformed_config_stops_the_delivery_before_it_starts
+  # An operator problem, not an I/O hiccup — and it defers for exactly that
+  # reason. The envelope got this far because smtpd.conf accepted the address,
+  # and smtpd.conf and feeds.json are generated from the same option, so a
+  # corrected file delivers it. Under the old contract this answered 78 and
+  # bounced every newsletter that arrived during a bad deploy.
+  def test_a_malformed_config_defers_the_delivery_instead_of_bouncing_it
     File.write(@config, "{ not json")
     code, _out, err = ingest(WEEKLY, "simple-multipart.eml")
 
-    assert_equal Mail2rss26::CLI::EX_CONFIG, code
+    assert_includes DEFERRING, code
     assert_includes err, "not valid JSON"
     assert_empty Dir.children(@state)
+  end
+
+  # The undecidable row, pinned so the judgement has to be made again rather
+  # than drifted past: a crash we did not classify might be deterministic in
+  # this newsletter's bytes, but we cannot know that from inside it, and
+  # bouncing throws the message away while a fix released this afternoon could
+  # still have delivered it.
+  def test_an_unclassified_exception_defers_and_puts_the_backtrace_on_stderr
+    code, _out, err = run_cli("ingest", "--recipient", WEEKLY, "--config", @config,
+                              stdin: Kaboom.new)
+
+    assert_includes DEFERRING, code
+    assert_includes err, "RuntimeError: kaboom"
+    # The backtrace is the only bug report a delivery ever files, and it is now
+    # carrying the whole diagnostic load that a distinct exit code used to
+    # pretend to carry.
+    assert_match(/^ {2}\S+cli\.rb:\d+/, err)
+  end
+
+  # Not a SystemCallError and not an IOError, so it falls through to the
+  # catch-all: exactly the shape of a bug in a parser that some future
+  # newsletter trips over.
+  class Kaboom < StringIO
+    def read(*)
+      raise "kaboom"
+    end
   end
 
   # --- render, the other half of the command line --------------------------
@@ -314,6 +368,19 @@ class IngestTest < Minitest::Test
     assert_equal 67, code
     assert_includes output, "no feed is configured"
     assert_empty Dir.children(@state)
+  end
+
+  # The same N3 property as above, but read off a real process the way smtpd
+  # reads it — a wait status, not a return value inside Minitest.
+  def test_the_binary_exits_with_a_deferring_code_when_the_state_dir_is_unwritable
+    skip "root ignores the mode bits" if Process.uid.zero?
+
+    File.chmod(0o500, @state)
+    code, output = run_binary("ingest", "--recipient", WEEKLY, "--config", @config,
+                              input: File.binread(fixture_path("simple-multipart.eml")))
+
+    assert_includes DEFERRING, code, output
+    assert_includes output, "Permission denied"
   end
 
   private

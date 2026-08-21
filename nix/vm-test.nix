@@ -25,10 +25,13 @@
 #   3. F1/F3/F4 and F6 through the real path: a message that arrives over the
 #      wire becomes an entry, and the same message twice is still one entry.
 #
-#   4. Whether smtpd distinguishes MDA exit codes. It does — 71 and 75 defer,
-#      everything else non-zero is *permanent* — which is the opposite of the
-#      conservative reading the README carried until this phase. See the last
-#      subtest, and the note in README.md.
+#   4. That the exit-code contract behaves the way smtpd.c says it does. 71 and
+#      75 defer; every other non-zero status is *permanent* and the newsletter
+#      bounces. Phase 6 rewrote the contract around that fact — N3 was being
+#      violated by construction — so the last subtest drives both sides of the
+#      new line with the *real* program: an envelope that bounces because the
+#      recipient has no feed, and an envelope that stays in the queue because
+#      the program answered 75. See the exit-code section of README.md.
 { self, pkgs }:
 
 let
@@ -49,8 +52,16 @@ let
   # it goes to the recorder rather than to us.
   probeDomain = "probe.invalid";
 
-  # Likewise, but delivered by a stand-in that only ever exits 75.
+  # Likewise, but delivered by a stand-in that only ever exits 75. It is the
+  # control: the smallest possible thing that can answer "does smtpd defer on
+  # 75 at all", with none of this program in the way.
   tempfailDomain = "tempfail.invalid";
+
+  # And the same question asked of the real binary. Mail here is delivered by
+  # the actual mda command with its --config pointed at a file that is not
+  # there, which is the commonest operator mistake there is and which the new
+  # contract answers with 75 rather than the old, descriptive, *bouncing* 78.
+  brokenConfigDomain = "brokenconfig.invalid";
 
   user = "mail2rss26";
   stateDir = "/var/lib/mail2rss26";
@@ -174,9 +185,9 @@ pkgs.testers.runNixOSTest {
           table m2r_addresses { ${commaJoin (map quoted accepted)} }
           table m2r_virtual { ${commaJoin (map (address: "\"${address}\" = ${user}") accepted)} }
 
-          # Everything for the two throwaway domains goes to one system user as
-          # well, via catch-alls.
-          table aux_virtual { "@${probeDomain}" = ${user}, "@${tempfailDomain}" = ${user} }
+          # Everything for the three throwaway domains goes to one system user
+          # as well, via catch-alls.
+          table aux_virtual { "@${probeDomain}" = ${user}, "@${tempfailDomain}" = ${user}, "@${brokenConfigDomain}" = ${user} }
 
           action "m2r" mda "${m2r.mdaCommand}" \
                  virtual <m2r_virtual> user ${user}
@@ -186,9 +197,17 @@ pkgs.testers.runNixOSTest {
 
           action "tempfail" mda "${tempfail}" virtual <aux_virtual> user ${user}
 
+          # The real mda command, with the feed list pointed somewhere empty.
+          # Nothing about it is a stand-in: this is `mail2rss26 ingest` failing
+          # the way a bad deploy makes it fail, and the assertion is that the
+          # newsletter is still in the queue afterwards.
+          action "brokenconfig" mda "${m2r.mdaCommand} --config /var/empty/no-such-feeds.json" \
+                 virtual <aux_virtual> user ${user}
+
           match from any for rcpt-to <m2r_addresses> action "m2r"
           match from any for domain "${probeDomain}" action "probe"
           match from any for domain "${tempfailDomain}" action "tempfail"
+          match from any for domain "${brokenConfigDomain}" action "brokenconfig"
         '';
       };
 
@@ -422,37 +441,65 @@ pkgs.testers.runNixOSTest {
         assert record["rcpt"].endswith("@${probeDomain}")
         assert record["rcpt"].split("@")[0].split("+")[0] == "weekly.a41f9d"
 
-    with subtest("exit codes: 75 defers, other non-zero codes are permanent"):
-        # The other half of the plan's open question. OpenSMTPD 7.8.0 decides
-        # this in smtpd.c: EX_OSERR (71) and EX_TEMPFAIL (75) become
-        # MDA_TEMPFAIL, *every other* non-zero status becomes MDA_PERMFAIL.
-        # That is the opposite of the conservative reading ("any non-zero
-        # defers") the README carried until this phase, and it matters: 74,
-        # the one code the exit-code table marks as worth retrying, bounces.
+    with subtest("N3: the failures that must survive stay in the queue"):
+        # The property the whole exit-code contract exists for, driven against
+        # a real queue. OpenSMTPD 7.8.0 decides it in smtpd.c: EX_OSERR (71)
+        # and EX_TEMPFAIL (75) become MDA_TEMPFAIL, *every other* non-zero
+        # status becomes MDA_PERMFAIL and the envelope is bounced rather than
+        # kept. Phase 6 rewrote the contract around that: this program now
+        # answers 75 for everything an operator can put right, and 67 — a
+        # bounce — only for a recipient that has no feed and never will.
+        #
+        # Before Phase 6 the second half of this subtest would have failed: a
+        # missing feed list answered 78, which is a MDA_PERMFAIL, so every
+        # newsletter arriving during a bad deploy was destroyed instead of
+        # queued. That is the N3 violation, and this is the assertion that
+        # would have caught it.
         #
         # The envelope sender is empty throughout. A permanent failure would
         # otherwise enqueue a bounce to a domain this VM cannot reach, and that
         # bounce would sit in the queue and break every later `drained()`.
 
-        # A permanent failure, produced by the real program: DRIFTED is in
+        # The bounce side, produced by the real program: DRIFTED is in
         # smtpd.conf's tables and in no feed, so `ingest` exits 67 (EX_NOUSER).
         before = eml_count()
         send("", DRIFTED)
         drained()
 
-        # If this ever hangs instead, smtpd deferred rather than gave up, the
-        # README's original reading was right, and this comment is what needs
-        # changing.
+        # `drained()` returning at all is the assertion: the queue emptied, so
+        # smtpd gave up on the envelope rather than holding it. If this hangs
+        # instead, 67 is deferring and the bounce/defer line in README.md is
+        # drawn in the wrong place.
         assert eml_count() == before, "an unknown recipient wrote something"
 
-        # smtpd copies the last line of the agent's output into the log, which
-        # is the only bug report a delivery ever files. The message names the
-        # two files that have drifted apart, and here it is doing so.
+        # smtpd copies the agent's output into the log, which is the only bug
+        # report a delivery ever files — and, now that a single number carries
+        # every deferring failure, the only place the *reason* survives at all.
+        # The message names the two files that have drifted apart.
         mail.succeed("journalctl -u opensmtpd.service | grep -q 'no feed is configured'")
 
-        # And a temporary failure, produced by a stand-in that does nothing
-        # else. This envelope stays in the queue for the rest of the test,
-        # which is why this subtest is last.
+        # The defer side, also produced by the real program: the same mda
+        # command with its feed list pointed at a file that does not exist.
+        # Everything from here on stays in the queue, which is why this subtest
+        # is last.
+        send("", "anything@${brokenConfigDomain}")
+        mail.wait_until_succeeds(
+            "journalctl -u opensmtpd.service | grep -q 'cannot read config'"
+        )
+        mail.succeed("smtpctl show queue | grep -q .")
+
+        # An envelope smtpd is *holding* has a retry time in the future; one it
+        # has given up on is not there at all. This is the difference between
+        # "the newsletter is waiting for the operator" and "the newsletter is
+        # gone", and it is the whole of N3.
+        queue = mail.succeed("smtpctl show queue")
+        print(queue)
+        assert "${brokenConfigDomain}" in queue, (
+            "a delivery that exited 75 is not in the queue: it was bounced, not deferred"
+        )
+
+        # And the control, with none of this program in the way: a stand-in
+        # that reads the message and does nothing but exit 75.
         send("", "anything@${tempfailDomain}")
         mail.wait_until_succeeds(f"test -s {PROBE}/tempfail-attempts")
         mail.succeed("smtpctl show queue | grep -q .")

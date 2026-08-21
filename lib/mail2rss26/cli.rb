@@ -10,33 +10,47 @@ require "mail2rss26/store"
 module Mail2rss26
   # The two commands, and the exit codes they answer with.
   #
-  # The codes are the interface with OpenSMTPD and are documented in the README
-  # as a contract, not as a detail — they are the only thing the mail system
-  # ever learns about a delivery. The full table lives there; the short version
-  # is that these are sysexits(3) values, that a non-zero exit keeps the message
-  # in the queue, and that the split below says whether a retry has any chance
-  # of a different answer.
+  # The exit code is an *instruction to OpenSMTPD*, not a comment in the log.
+  # smtpd.c decides on it directly: EX_OSERR (71) and EX_TEMPFAIL (75) mean
+  # "keep this envelope and try again", and every other non-zero status means
+  # "give up, bounce it, the message is gone". A code chosen for how well it
+  # describes the failure — the sysexits(3) way — therefore throws newsletters
+  # away whenever the well-describing number is not one of those two.
+  #
+  # So the only question a failure here has to answer is: *must this message
+  # survive?* If a corrected system (a fixed feeds.json, a fixed mda line, a
+  # disk with room on it, a released bug fix) would deliver this exact envelope,
+  # the answer is yes and the code is 75. The detail that a sysexits value would
+  # have carried goes on stderr instead, which smtpd copies into the mail log
+  # and into the bounce.
+  #
+  # The full table and the reasoning per row are in README.md. This is the
+  # interface with OpenSMTPD, so changing any of it is changing a contract.
   module CLI
     EX_OK = 0
 
-    # Permanent. Nobody's disk is going to fix these.
-    EX_USAGE = 64    # the command line is wrong: the mda(8) line needs editing
-    EX_DATAERR = 65  # stdin held no message at all
-    EX_NOUSER = 67   # no feed for this recipient (F5) or no such --feed
-    EX_SOFTWARE = 70 # an exception we did not classify: a bug, with a backtrace
-    EX_CONFIG = 78   # the feed list is missing, unreadable or malformed
-
-    # Temporary. A retry is exactly the right thing.
-    EX_IOERR = 74 # reading stdin or writing the state directory failed
-
-    # Reserved, and deliberately never returned. It is the one code every
-    # sendmail-derived MDA reads as "defer this", so no other meaning in this
-    # program may ever be given the number 75.
+    # Defer: the envelope stays in OpenSMTPD's queue and is tried again (N3).
+    #
+    # This is the *only* non-zero code this program returns for a failure it or
+    # an operator could still put right, and it is deliberately one number
+    # rather than a vocabulary. 71 (EX_OSERR) defers identically and was
+    # considered for the I/O cases; it was rejected because a second defer code
+    # buys no behaviour, only the appearance of a taxonomy — and it was exactly
+    # that appearance which made 74 look like a reasonable thing to return.
     EX_TEMPFAIL = 75
 
+    # Bounce: the envelope leaves the queue and the sender is told.
+    #
+    # The one condition in this program that no operator action makes
+    # deliverable: an address that names no feed. There is nothing to fix
+    # except inventing a feed, F5 says the address should have been refused
+    # with 550 during the dialogue anyway, and deferring it would only retry
+    # until the queue expires it — a bounce four days late, and noisier.
+    EX_NOUSER = 67
+
     # A mistake in the invocation, told apart from every ArgumentError a bug
-    # might raise deeper down — those are worth a backtrace and EX_SOFTWARE, not
-    # a usage message.
+    # might raise deeper down — those are worth a backtrace, and both end up
+    # deferring anyway.
     class UsageError < StandardError; end
 
     COMMANDS = %w[ingest render].freeze
@@ -60,7 +74,11 @@ module Mail2rss26
       case command
       when nil, "-h", "--help", "help"
         stdout.puts BANNER
-        command.nil? ? EX_USAGE : EX_OK
+        # An empty argv is a broken mda(8) line as easily as it is a human at a
+        # prompt, and this program cannot tell the two apart. The one that has
+        # a newsletter riding on the answer decides it: defer, so the message
+        # is still there once the line is fixed.
+        command.nil? ? EX_TEMPFAIL : EX_OK
       when "--version"
         stdout.puts "mail2rss26 #{VERSION}"
         EX_OK
@@ -71,29 +89,53 @@ module Mail2rss26
       else
         stderr.puts "mail2rss26: unknown command #{command.inspect}"
         stderr.puts BANNER
-        EX_USAGE
+        EX_TEMPFAIL
       end
     rescue OptionParser::ParseError, UsageError => e
+      # The mda(8) line is wrong: a renamed option, a missing --recipient, a
+      # mistyped command word. Sixty-four says so precisely and would bounce
+      # every newsletter that arrives until somebody notices — and what they
+      # would notice is the absence of mail, which is the hardest thing there
+      # is to notice. Deferring loses nothing instead: the operator edits
+      # smtpd.conf, and the queue drains what it was holding. It is not silent
+      # either, and the two places it shows are worth knowing: `smtpctl show
+      # queue` stops being empty, and this message is in the mail log once per
+      # delivery.
       stderr.puts "mail2rss26: #{e.message}"
-      EX_USAGE
+      EX_TEMPFAIL
     rescue Config::Error => e
+      # The feed list is missing, unreadable, not JSON, or fails the schema.
+      # Exactly the same shape of problem as the line above, one file over —
+      # and the envelope that hit it was accepted because smtpd.conf said the
+      # address was good, so a corrected feeds.json delivers it. This is the
+      # "OpenSMTPD's queue is our retry mechanism" payoff being collected.
       stderr.puts "mail2rss26: #{e.message}"
-      EX_CONFIG
+      EX_TEMPFAIL
     rescue SystemCallError, IOError => e
       # Everything the state directory and stdin can do to us: ENOSPC, EACCES,
-      # EROFS, a broken pipe. All of it is our side failing, all of it is
-      # plausibly gone by the next attempt, so it is the temporary code and the
-      # message stays in the queue.
+      # EROFS, a broken pipe. The clearest defer of the lot, and the one the
+      # old contract got exactly backwards by answering 74 (EX_IOERR) — the
+      # single row it had marked "a retry helps" was the row that bounced.
       stderr.puts "mail2rss26: #{e.message}"
-      EX_IOERR
+      EX_TEMPFAIL
     rescue StandardError => e
       # A bug. The backtrace goes to stderr on purpose — OpenSMTPD captures the
       # delivery agent's output into the log, so this is the only bug report we
-      # are ever going to get — and the exit code is still non-zero, so the
-      # newsletter is still in the queue when the bug is fixed (N3).
+      # are ever going to get.
+      #
+      # It defers, and this is the one row where that is a judgement call
+      # rather than a deduction. A crash we did not classify may well be
+      # deterministic in the bytes of this newsletter, in which case every
+      # retry crashes the same way and the envelope expires in a few days —
+      # deferring bought nothing but noise. But we cannot know that from here,
+      # and the two ways of being wrong do not cost the same: defer a
+      # permanent crash and we lose four days of queue and then bounce anyway;
+      # bounce a crash somebody fixes this afternoon and the newsletter is
+      # gone, unrecoverably, while the fix sits there. Undecidable plus
+      # asymmetric costs is the situation N3 exists for.
       stderr.puts "mail2rss26: #{e.class}: #{e.message}"
       e.backtrace&.each { |line| stderr.puts "  #{line}" }
-      EX_SOFTWARE
+      EX_TEMPFAIL
     end
 
     def parse_ingest(args)
@@ -156,11 +198,18 @@ module Mail2rss26
       raw = read_message(stdin)
       if raw.strip.empty?
         # Not "a malformed message", which Phase 2 settled is not an error:
-        # zero bytes is not a message at all, and it is our side of the
-        # conversation that is broken. Retrying will produce zero bytes again,
-        # hence the permanent code.
+        # zero bytes is not a message at all.
+        #
+        # It defers, which reverses Phase 4's reading ("the next attempt hands
+        # over the same nothing", so 65, permanent). A message delivered over
+        # SMTP cannot be zero bytes — DATA carries headers and smtpd stamps a
+        # Received: of its own on top of them — so zero bytes on stdin never
+        # means "this envelope is empty", it means the pipe or the mda line
+        # between the queue and here is broken. The queue file still holds a
+        # whole newsletter. Bouncing would throw it away on the strength of
+        # evidence about our plumbing.
         stderr.puts "mail2rss26: nothing on stdin — no message to file for #{recipient}"
-        return EX_DATAERR
+        return EX_TEMPFAIL
       end
 
       # The clock, once, here, and nowhere else in this program.

@@ -237,15 +237,40 @@
             env -i ${mail2rss26} render \
               --config "$PWD/feeds.json" --state-dir "$PWD/state"
 
-            echo "--- N3: a non-zero exit has to survive the wrapper unchanged"
+            echo "--- the exit code has to survive the wrapper unchanged"
             # If a wrapper ever swallowed this, OpenSMTPD would be told a failed
             # delivery succeeded and the newsletter would be gone rather than
-            # queued. 67 is EX_NOUSER — an address no feed claims.
+            # queued. 67 is EX_NOUSER — an address no feed claims, and the one
+            # failure this program deliberately leaves on the bounce side.
             code=0
             env -i ${mail2rss26} ingest \
               --config "$PWD/feeds.json" --state-dir "$PWD/state" \
               --recipient nobody@example.invalid < /dev/null || code=$?
             test "$code" -eq 67 || { echo "expected EX_NOUSER (67), got $code" >&2; exit 1; }
+
+            echo "--- N3: a transient failure has to arrive as a code smtpd defers on"
+            # smtpd.c makes MDA_TEMPFAIL out of exactly two statuses, EX_OSERR
+            # (71) and EX_TEMPFAIL (75); every other non-zero one is
+            # MDA_PERMFAIL and the newsletter bounces. A state directory the
+            # delivery cannot write to is the plainest transient failure there
+            # is, and until this phase it answered 74 — the most descriptive
+            # number available, and a bounce. Asserted as the set rather than
+            # as 75 because the set is what N3 is a statement about.
+            mkdir -p locked
+            chmod 500 locked
+            code=0
+            env -i ${mail2rss26} ingest \
+              --config "$PWD/feeds.json" --state-dir "$PWD/locked" \
+              --recipient weekly.a41f9d@feeds.lasocha.net \
+              < ${self}/test/fixtures/simple-multipart.eml || code=$?
+            chmod 700 locked
+            case "$code" in
+              71 | 75) ;;
+              *)
+                echo "exit $code is MDA_PERMFAIL to smtpd: the newsletter would bounce" >&2
+                exit 1
+                ;;
+            esac
 
             touch $out
           '';

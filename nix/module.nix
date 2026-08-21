@@ -200,8 +200,9 @@ in
     # repository can be written without hard-coding a single string this module
     # owns — which is the one failure this module is actually in a position to
     # prevent. `feeds.json` and `smtpd.conf` disagreeing is what produces an
-    # EX_NOUSER in production, and the README calls that unreachable precisely
-    # because both sides are supposed to come from here.
+    # EX_NOUSER in production — the one failure this program *bounces* rather
+    # than defers — and the README calls it unreachable precisely because both
+    # sides are supposed to come from here.
 
     user = lib.mkOption {
       type = lib.types.str;
@@ -271,8 +272,8 @@ in
   config = lib.mkIf cfg.enable {
     # Both of these are checked again by Config on every delivery. They are
     # here as well because a `nix flake check` on the consuming machine is a
-    # cheaper place to find out than a deferred newsletter and an EX_CONFIG in
-    # the mail log.
+    # cheaper place to find out than a queue filling up with deferred
+    # newsletters and a config error repeated once per delivery in the mail log.
     assertions = [
       {
         assertion = lib.all (name: builtins.match namePattern name != null) (lib.attrNames cfg.feeds);
