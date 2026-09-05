@@ -74,7 +74,12 @@ module Mail2rss26
       end
 
       def load(path)
-        parse(File.read(path), path)
+        # UTF-8 explicitly, not the locale's idea of an encoding. A delivery
+        # runs with no environment, which makes Encoding.default_external
+        # US-ASCII, and a feed titled "Wielkie Okazje – tygodnik" would then
+        # fail to load *on the server only*. JSON is UTF-8 by definition
+        # (RFC 8259), so there is nothing to guess.
+        parse(File.read(path, encoding: Encoding::UTF_8), path)
       rescue SystemCallError => e
         # Missing, unreadable, a directory: all the same to the operator, and
         # all Config::Error rather than a bare SystemCallError. Both defer, so

@@ -23,7 +23,8 @@ sender ────► OpenSMTPD ───────────────�
 recipient → feed, message stored, feed re-rendered, an exit-code contract written against
 what OpenSMTPD does with the number rather than what `sysexits(3)` calls it — the whole
 thing is packaged (`nix run .#default -- ingest` works from the flake alone), and there is
-now a `nixosModules.default` and a `nixosTest`.
+now a `nixosModules.default` and a `nixosTest`. Every delivery is now recorded in a journal
+and there are three read-only commands for looking at it; see "The delivery journal".
 
 **The `nixosTest` has never been executed.** It needs `/dev/kvm`, which the workstation
 does not have. It evaluates, its Python type-checks and lints, every derivation it depends
@@ -36,9 +37,19 @@ in the personal notes repository rather than here. This repository is the progra
 
 ## Commands
 
+Two commands are run by machines:
+
 ```bash
 mail2rss26 ingest --recipient ADDRESS [--config PATH] [--state-dir DIR] < message.eml
 mail2rss26 render [--feed NAME]       [--config PATH] [--state-dir DIR]
+```
+
+Three are run by a person on the server:
+
+```bash
+mail2rss26 log   [--feed NAME] [--outcome KIND] [--since WHEN] [--limit N] [--json]
+mail2rss26 show  <message-id | file name | any part of one> [--raw|--headers|--body]
+mail2rss26 feeds
 ```
 
 `ingest` reads exactly one message on stdin, files it under the feed the recipient names,
@@ -51,6 +62,11 @@ or to bring a brand-new feed into existence — a feed with no messages renders 
 empty document, which is a better thing for a subscriber to fetch than a 404. Rendering is
 deterministic: the same files always produce byte-identical output, so a `render` that
 changes nothing rewrites the same bytes and no reader is told anything happened.
+
+`log`, `show` and `feeds` only read. They are the answer to "what arrived, and what did we
+do with it?", and they are described under "The delivery journal" below. They are governed
+by none of the exit-code contract that follows: they answer `0` or `1`, the ordinary shell
+pair, because no envelope's fate depends on the number.
 
 ## Exit codes
 
@@ -112,7 +128,11 @@ envelope? If yes, the answer is 75 and nothing else.
 | 67 | No feed is configured for this recipient, or `--feed` names a feed that does not exist. Nothing was written. | **bounce** | There is no feed and there is not going to be one. See below. |
 | 75 | Anything else that went wrong: a broken `mda` line, an unreadable or invalid feed list, `ENOSPC` / `EROFS` / `EACCES` on the state directory, a broken pipe, zero bytes on stdin, an unclassified exception. | **defer** | Somebody can fix it, and the queue holds the newsletter until they do. |
 
-Three codes, and that is the entire list. The reasoning per condition:
+Three codes, and that is the entire list — for a delivery. `log`, `show` and `feeds` are
+outside it entirely and use `1` for "that did not work", because nothing about them is
+read by a mail system. Nothing reachable from `ingest` may ever return `1`.
+
+The reasoning per condition:
 
 - **A broken `mda` command line** (a renamed option, a missing `--recipient`, a mistyped
   command word) was `64`. It defers now. It is permanent only in the sense that it will
@@ -281,11 +301,14 @@ in.
 
 ```
 /var/lib/mail2rss26/
-└── lamplighter/                       one directory per feed, named by the config
-    ├── 20260805T071244Z-pw-08.20260805071244@mail.pixelwharf.exa-45fe21151281f73c.eml
-    ├── 20260812T060316Z-20260812060316.4c1b9a7e@mail.lamplighter-86791c3c9825e41c.eml
-    ├── atom.xml                       what nginx serves
-    └── .lock                          one delivery at a time
+├── lamplighter/                       one directory per feed, named by the config
+│   ├── 20260805T071244Z-pw-08.20260805071244@mail.pixelwharf.exa-45fe21151281f73c.eml
+│   ├── 20260812T060316Z-20260812060316.4c1b9a7e@mail.lamplighter-86791c3c9825e41c.eml
+│   ├── atom.xml                       what nginx serves
+│   └── .lock                          one delivery at a time
+└── journal/                           0750 — see below
+    ├── 2026-09.jsonl                  one line per run of `ingest`
+    └── .lock                          one append at a time
 ```
 
 Files, not a database: a backup is a copy of a directory, and debugging is `cat`. The
@@ -320,6 +343,156 @@ independent and both are cheap.
 Feeds are truncated to the **50 most recent entries** at render time only. The `.eml` files
 stay, so raising the limit republishes older entries rather than needing them re-delivered.
 
+## The delivery journal
+
+Almost everything this program decides used to leave no trace. A stored message left an
+`.eml` and a re-rendered feed, but nothing saying which address matched it or where its
+date came from; a redelivery left nothing at all, because being a no-op against the disk
+is the design; a refused recipient left nothing by promise; and a deferral left one line on
+stderr, which OpenSMTPD copies into the mail log and which is gone the next time that log
+rotates. The question *what arrived, and what did we do with it?* had no answer on disk.
+
+`<state>/journal/<year>-<month>.jsonl` is that answer. One line per **run of `ingest`** —
+not per message, which matters: a deferred envelope is retried, and every attempt is a
+line, which is exactly what you want to see. Appended, never rewritten, under an exclusive
+`flock` so two simultaneous deliveries cannot interleave inside a line. One file per month
+keeps `cat` sane and makes retention an `rm` rather than a feature. Still files, still no
+database: a backup is a copy of a directory, and debugging is `cat` — or `jq`.
+
+```json
+{"v":1,"at":"2026-09-05T07:31:00Z","outcome":"stored","exit":0,
+ "recipient":"weekly.a41f9d@feeds.lasocha.net","feed":"lamplighter","match":"exact",
+ "message_id":"20260812060316.4c1b9a7e@mail.lamplighter.example",
+ "file":"20260812T060316Z-20260812060316.4c1b9a7e@mail.lamplighter-86791c3c9825e41c.eml",
+ "from":"newsletter@lamplighter.example","subject":"Issue 42: The quiet parts of a slow web",
+ "date":"2026-08-12T06:03:16Z","date_source":"header","bytes":3640,"body":"html"}
+```
+
+| `outcome` | Exit | What it means | What else is on disk |
+| --- | ---: | --- | --- |
+| `stored` | 0 | Written and the feed re-rendered | the `.eml` named in `file` |
+| `duplicate` | 0 | We already had this `Message-ID`; nothing written | the `.eml` from the first delivery |
+| `no-feed` | 67 | The recipient names no feed; nothing written | nothing |
+| `deferred` | 75 | Something failed; the envelope stays in the queue | nothing |
+
+`match` is `exact` or `tag`, which is the difference between a feed that is configured
+correctly and one that works by accident. `date_source` is `header`, `received`, `delivery`
+or `epoch` — a fact about *our parser* that the `.eml` cannot tell you, and the usual
+explanation for a newsletter that sorted itself somewhere surprising in the reader.
+`deferred` lines carry `reason` and `error` instead of the message fields.
+
+### Four rules it is built on
+
+**A journal failure never fails a delivery.** Writing a line does not raise; it reports on
+stderr and carries on. This is the one place in this project where swallowing an error is
+right, and it is the mirror of the reasoning everywhere else: "a swallowed exception is a
+lost newsletter" is a statement about the *newsletter*. Turning a delivery whose `.eml` is
+already safely on disk into a deferral, because the note about it could not be written,
+would be that convention applied to the wrong noun — and the redelivery four days later
+would find the message already stored anyway.
+
+**A refusal is recorded, though nothing of the message is kept.** `ingest` now reads and
+parses a message it is about to discard, purely so the line can name the sender and the
+subject. It costs nothing — the bytes were going to be thrown away either way — and it is
+what tells a retired newsletter apart from a stranger guessing addresses. Only one of those
+is worth acting on, and `EX_NOUSER` is supposed to be unreachable, so a line here is
+evidence that `smtpd.conf` and `feeds.json` have drifted apart. "Nothing was written" still
+holds for the message: no feed directory, no `.eml`, not one byte of the newsletter.
+
+**It is a journal of deliveries, not of runs.** `render` never writes to it. A failed
+render is a failed systemd unit and is visible as one.
+
+**It is not world-readable.** Everything else under the state directory is a newsletter
+somebody chose to receive, protected by an unguessable URL rather than by its mode. The
+journal is different in kind: it is the single file that cross-references every feed at
+once — every sender, every subject, every address, in one place. nginx serves this tree, so
+a `location` pointed one directory too high would leak one feed's archive; it would leak the
+whole reading history out of this. The directory is `0750`, nginx is deliberately not in the
+group, and `mail2rss26 log` therefore runs as `root` or as `mail2rss26` — the same `sudo`
+the operator already needs for `render`.
+
+### Reading it
+
+```bash
+sudo -u mail2rss26 mail2rss26 log
+sudo -u mail2rss26 mail2rss26 log --outcome deferred --since 1d
+sudo -u mail2rss26 mail2rss26 log --feed lamplighter --limit 200
+sudo -u mail2rss26 mail2rss26 log --json | jq 'select(.bytes > 500000)'
+```
+
+```
+TIME                 OUTCOME    FEED         FROM                            SUBJECT
+2026-09-05 07:31:02  deferred   -            -                               usage: invalid option: --recipei…
+2026-09-05 07:31:01  no-feed    -            hello@pixelwharf.example        Pixel Wharf #08: the typeface th…
+2026-09-05 07:31:01  duplicate  lamplighter  newsletter@lamplighter.example  Issue 42: The quiet parts of a s…
+2026-09-05 07:30:59  stored     lamplighter  newsletter@lamplighter.example  Issue 42: The quiet parts of a s…
+```
+
+`--since` takes `30m`, `12h`, `7d` or `2026-09-01`, and nothing else — this is a filter on a
+log a person is reading, not a query language. `--limit 0` means all. Nothing wraps: a log
+you can `grep` is worth more than a log that never elides anything, and `--json` answers the
+stored lines when you want the untruncated field.
+
+**The second line above is the one worth a habit.** The open question the plan records as
+*"nobody looks at the queue"* is real: the whole safety argument for deferring is "an
+operator will notice and fix it", and a delivery agent that has been deferring since Tuesday
+looks exactly like a quiet week with no newsletters. `log --outcome deferred --since 1d` is
+the difference, and it is the obvious thing to hang an alert on later.
+
+```bash
+mail2rss26 show 20260812060316                # a Message-ID, or any part of a file name
+mail2rss26 show 20260812060316 --raw > out.eml # the bytes that arrived, byte for byte
+mail2rss26 show 20260812060316 --headers       # the header block, undecoded
+mail2rss26 show 20260812060316 --body          # the part that became the entry
+```
+
+`show` joins the journal's account of a delivery to the message still on disk:
+
+```
+Delivery 2026-09-05 07:31:00
+  outcome     stored (exit 0)
+  recipient   weekly.a41f9d@feeds.lasocha.net (matched exactly)
+  feed        lamplighter
+  message-id  20260812060316.4c1b9a7e@mail.lamplighter.example
+  file        /var/lib/mail2rss26/lamplighter/20260812T060316Z-…eml
+  size        3640 bytes
+  from        The Lamplighter <newsletter@lamplighter.example>
+  subject     Issue 42: The quiet parts of a slow web
+  date        2026-08-12 06:03:16Z (from the message's own Date header)
+  body        text/html, 2114 characters
+```
+
+Either half can be missing and it still works. A refused delivery has a journal line and no
+file, and is found by the `Message-ID` the line kept — without that it would be the outcome
+you most want to look up and the one that cannot be looked up. A message delivered before
+the journal existed has a file and no line, which on the day this ships is *every* message
+on the machine, so the feed directories are searched too. Asking for `--raw`, `--headers` or
+`--body` of a delivery that stored nothing fails with a message rather than writing nothing
+and claiming success, because the usual caller is a shell redirect.
+
+```
+FEED         MESSAGES  ENTRIES  LAST DELIVERY        ADDRESSES
+lamplighter        42       40  2026-09-05 07:31:00  weekly.a41f9d@feeds.lasocha.net
+okazje              0        0  -                    okazje.3f1c@feeds.lasocha.net
+```
+
+`feeds` lists what is configured against what is on disk. The two counts differ on purpose —
+F7 truncates the feed at render time and every `.eml` is kept — so a feed where they diverge
+has archive older than its subscribers can see, which is the design and is nice to be able to
+confirm. A feed with a row of zeroes is the answer to "is this actually deployed?".
+
+### What it does not see
+
+Mail refused with `550` during the SMTP dialogue never reaches this program, so it is not in
+the journal and cannot be. That is the F5 design working — the feed list generates both
+`smtpd.conf` and `feeds.json`, and an address no feed claims is refused before `DATA` — and
+the alternative is a catch-all, which means accepting and storing spam for the whole domain
+and giving up the `550`. The record for those attempts is OpenSMTPD's own log:
+
+```bash
+journalctl -u opensmtpd.service | grep 'Invalid recipient'
+```
+
 ## Development
 
 ```bash
@@ -341,6 +514,15 @@ wrapper under `env -i`, because the suite runs with the interpreter's own gem di
 reach and a server never will — see "Installing" for why that difference is the expensive
 one. Neither needs KVM and **neither may ever grow a VM**: N5 says the fast loop runs
 without one.
+
+`env -i` means no `LANG` either, and that has already caught one bug that no dev shell can:
+with no locale, `Encoding.default_external` is US-ASCII, so anything read from disk without
+an explicit encoding comes back tagged US-ASCII and the first Polish subject in it makes
+`String#strip` raise. That is the state **every** `mda(8)` delivery runs in. The rule that
+came out of it: this program never asks the locale what an encoding is. `feeds.json` and the
+journal are read as UTF-8 because JSON is UTF-8 by definition, `.eml` files are read as
+bytes because a mailer will send anything, and both `checks` now deliver a non-ASCII fixture
+to prove it.
 
 `checks.vm-test` is the `nixosTest` — a real OpenSMTPD, a real SMTP conversation from the
 test driver, and assertions on the `atom.xml` that comes out. It boots a machine, so from
@@ -485,8 +667,10 @@ the table above calls unreachable.
 | `addresses` | Every configured address, flattened and sorted, for the `smtpd.conf` tables. |
 
 Enabling it also creates `/etc/mail2rss26/feeds.json` (which is `Config::DEFAULT_PATH`,
-which is why the `mda` line carries no `--config`) and a `mail2rss26-render.service`: a
-oneshot that re-renders every feed at boot and whenever the feed list changes. It is what
+which is why the `mda` line carries no `--config`), a `<stateDir>/journal` directory at
+`0750` (see "The delivery journal" for why that one is not world-readable), and a
+`mail2rss26-render.service`: a oneshot that re-renders every feed at boot and whenever the
+feed list changes. It is what
 makes a brand-new feed a valid empty document the day it is deployed instead of a 404
 until its first newsletter, and it is where a malformed feed list fails loudly — at the
 `nixos-rebuild switch` that introduced it, rather than during a delivery hours later.

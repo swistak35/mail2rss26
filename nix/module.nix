@@ -312,10 +312,30 @@ in
     # not the bytes behind it.
     users.groups.${cfg.user} = { };
 
-    systemd.tmpfiles.settings.mail2rss26.${cfg.stateDir}.d = {
-      user = cfg.user;
-      group = cfg.user;
-      mode = "0755";
+    systemd.tmpfiles.settings.mail2rss26 = {
+      ${cfg.stateDir}.d = {
+        user = cfg.user;
+        group = cfg.user;
+        mode = "0755";
+      };
+
+      # The delivery journal, and the one directory here that is *not* world
+      # readable. Everything else under stateDir is a newsletter somebody
+      # chose to receive, protected by an unguessable URL rather than by its
+      # mode; the journal is different in kind, because it is the single file
+      # that cross-references every feed at once — every sender, every subject,
+      # every address, in one place. A `location /` pointed a directory too
+      # high would leak one feed's archive; it would leak the whole reading
+      # history out of this. 0750 makes that a permission error instead of a
+      # judgement call, and nginx is deliberately not in the group.
+      #
+      # `mail2rss26 log` is therefore run as root or as ${cfg.user}, which is
+      # the same sudo the operator already needs for `render`.
+      "${cfg.stateDir}/journal".d = {
+        user = cfg.user;
+        group = cfg.user;
+        mode = "0750";
+      };
     };
 
     # `/etc/mail2rss26/feeds.json` is Config::DEFAULT_PATH, which is what keeps
@@ -323,9 +343,18 @@ in
     # why this is an ordinary etc entry and not something cleverer.
     environment.etc."mail2rss26/feeds.json".source = feedsJson;
 
-    # For the operator, not for the service: `sudo -u mail2rss26 mail2rss26
-    # render --feed x` on a machine that is misbehaving. It is already in the
-    # closure, so this costs a symlink.
+    # For the operator, not for the service. It is already in the closure, so
+    # this costs a symlink, and it is how the inspection commands are reached:
+    #
+    #   sudo -u ${cfg.user} mail2rss26 log            what has arrived lately
+    #   sudo -u ${cfg.user} mail2rss26 log --outcome deferred --since 1d
+    #   sudo -u ${cfg.user} mail2rss26 show <message-id>
+    #   sudo -u ${cfg.user} mail2rss26 feeds
+    #   sudo -u ${cfg.user} mail2rss26 render --feed x
+    #
+    # The second line is the one worth a habit: a delivery agent that has been
+    # deferring since Tuesday looks exactly like a quiet week with no
+    # newsletters, and nothing else on this machine can tell the difference.
     environment.systemPackages = [ cfg.package ];
 
     # Renders every configured feed at boot and after any change to the feed

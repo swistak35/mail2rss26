@@ -101,7 +101,16 @@ module Mail2rss26
 
     # F4: the entry date, always UTC, always present. See EPOCH.
     def date
-      header_date || received_date || @fallback_date || EPOCH
+      dated.first
+    end
+
+    # Which of EPOCH's four sources actually answered — "header", "received",
+    # "delivery" or "epoch". Nothing in the feed depends on it; it is here so
+    # the delivery journal can say *why* an entry is dated the way it is, which
+    # is the single most common thing to wonder about a newsletter that sorted
+    # itself somewhere surprising in the reader.
+    def date_source
+      dated.last
     end
 
     # The stable half of the Atom entry id and the key F6 dedups on. A message
@@ -134,6 +143,18 @@ module Mail2rss26
     end
 
     private
+
+    # The date and the name of where it came from, decided once. The order is
+    # EPOCH's: the message's own Date, then the Received our OpenSMTPD stamped,
+    # then the caller's fallback (the delivery clock, read back out of the
+    # stored filename at render time), then the epoch.
+    def dated
+      @dated ||= if (time = header_date) then [time, "header"]
+                 elsif (time = received_date) then [time, "received"]
+                 elsif @fallback_date then [@fallback_date, "delivery"]
+                 else [EPOCH, "epoch"]
+                 end
+    end
 
     def body_part
       return @body_part if defined?(@body_part)

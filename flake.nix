@@ -237,6 +237,41 @@
             env -i ${mail2rss26} render \
               --config "$PWD/feeds.json" --state-dir "$PWD/state"
 
+            echo "--- the delivery journal recorded the delivery above"
+            test -f state/journal/*.jsonl
+            grep -q '"outcome":"stored"' state/journal/*.jsonl
+            grep -q '"feed":"lamplighter"' state/journal/*.jsonl
+
+            echo "--- the inspection commands load and run under the wrapper too"
+            # The reason these are here rather than only in the suite: `log`,
+            # `show` and `feeds` format things, and formatting is where a
+            # program reaches for a library. rexml is a *bundled* gem and
+            # raises LoadError under this wrapper while importing perfectly in
+            # the dev shell — the trap Phase 3 and Phase 5 both walked into.
+            # The suite cannot see it; only running the packaged binary with an
+            # empty environment can.
+            env -i COLUMNS=200 ${mail2rss26} log \
+              --config "$PWD/feeds.json" --state-dir "$PWD/state" | grep -q lamplighter
+
+            echo "--- a non-ASCII subject survives a delivery with no locale at all"
+            # `env -i` means no LANG, which makes Encoding.default_external
+            # US-ASCII — the state every mda(8) delivery runs in and no dev
+            # shell ever reproduces. Reading a journal line holding a Polish
+            # subject without saying UTF-8 raises out of String#strip, so this
+            # asserts the one condition that would otherwise be discovered by a
+            # newsletter arriving on a Tuesday.
+            env -i ${mail2rss26} ingest \
+              --config "$PWD/feeds.json" --state-dir "$PWD/state" \
+              --recipient weekly.a41f9d@feeds.lasocha.net \
+              < ${self}/test/fixtures/iso8859-2-quoted-printable.eml
+            env -i COLUMNS=200 ${mail2rss26} log \
+              --config "$PWD/feeds.json" --state-dir "$PWD/state" | grep -q "świetlik"
+            env -i COLUMNS=200 ${mail2rss26} feeds \
+              --config "$PWD/feeds.json" --state-dir "$PWD/state" | grep -q lamplighter
+            env -i ${mail2rss26} show 20260812060316 \
+              --config "$PWD/feeds.json" --state-dir "$PWD/state" --raw \
+              | cmp - ${self}/test/fixtures/simple-multipart.eml
+
             echo "--- the exit code has to survive the wrapper unchanged"
             # If a wrapper ever swallowed this, OpenSMTPD would be told a failed
             # delivery succeeded and the newsletter would be gone rather than

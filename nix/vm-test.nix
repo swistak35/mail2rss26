@@ -43,6 +43,10 @@ let
   weekly = "weekly.a41f9d@${domain}";
   okazje = "okazje.3f1c@${domain}";
 
+  # The same derivation the module defaults to, named here so the driver can
+  # run the operator's commands the way an operator would.
+  package = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+
   # Configured in smtpd.conf and in *no* feed. This is the drift the README
   # calls unreachable in production — smtpd.conf and feeds.json disagreeing —
   # and it is the only way to make the real program exit non-zero on demand.
@@ -240,12 +244,14 @@ pkgs.testers.runNixOSTest {
     };
 
   testScript = ''
+    import json
     import smtplib
     from xml.etree import ElementTree
 
     ATOM = "{http://www.w3.org/2005/Atom}"
     STATE = "${stateDir}"
     PROBE = "${probeDir}"
+    MAIL2RSS26 = "${pkgs.lib.getExe package}"
 
     WEEKLY = "${weekly}"
     DRIFTED = "${drifted}"
@@ -301,6 +307,20 @@ pkgs.testers.runNixOSTest {
         return int(mail.succeed(f"find {STATE}/{feed} -name '*.eml' | wc -l").strip())
 
 
+    def journal():
+        """Every delivery-journal line, newest first, as the operator sees it.
+
+        Read through the program's own `log --json` rather than by cat-ing the
+        files, because the reading half is what an operator on this machine
+        actually runs — and it runs as the service user, under systemd-run so
+        that it gets no more environment than a delivery does.
+        """
+        raw = mail.succeed(
+            f"systemd-run --pipe --quiet --uid=mail2rss26 {MAIL2RSS26} log --json --limit 0"
+        )
+        return [json.loads(line) for line in raw.splitlines() if line.strip()]
+
+
     def expansions():
         """Every recorded mda expansion, oldest first."""
         raw = mail.succeed(f"cat {PROBE}/expansions")
@@ -323,6 +343,14 @@ pkgs.testers.runNixOSTest {
         mail.wait_for_unit("mail2rss26-render.service")
 
         assert mail.succeed(f"stat -c '%U:%G:%a' {STATE}").strip() == "mail2rss26:mail2rss26:755"
+
+        # The journal is the one directory here that is not world-readable: it
+        # is the single file cross-referencing every feed, every sender and
+        # every subject, and nginx serves this tree.
+        assert (
+            mail.succeed(f"stat -c '%U:%G:%a' {STATE}/journal").strip()
+            == "mail2rss26:mail2rss26:750"
+        )
 
         for feed, title in (("lamplighter", "The Lamplighter"), ("okazje", "Wielkie Okazje")):
             document = atom(feed)
@@ -383,6 +411,21 @@ pkgs.testers.runNixOSTest {
         assert entries("okazje") == []
         assert eml_count("okazje") == 0
 
+        # And the delivery journal recorded it, through a real mda(8)
+        # expansion rather than a test harness calling the library. The two
+        # fields worth pinning here are the ones that only exist because a real
+        # OpenSMTPD was involved: the recipient is what %{rcpt} expanded to,
+        # and the exit code is what smtpd read.
+        line = journal()[0]
+        assert line["outcome"] == "stored", line
+        assert line["exit"] == 0
+        assert line["feed"] == "lamplighter"
+        assert line["recipient"] == WEEKLY
+        assert line["match"] == "exact"
+        assert line["subject"] == "Issue 42: The quiet parts of a slow web"
+        assert line["date_source"] == "header"
+        assert mail.succeed(f"ls {STATE}/lamplighter").strip() == line["file"]
+
     with subtest("F6: the same newsletter delivered twice is still one entry"):
         before = mail.succeed(f"sha256sum {STATE}/lamplighter/atom.xml").split()[0]
         stored = mail.succeed(f"ls {STATE}/lamplighter").strip()
@@ -397,6 +440,12 @@ pkgs.testers.runNixOSTest {
         assert mail.succeed(f"ls {STATE}/lamplighter").strip() == stored
         assert len(entries("lamplighter")) == 1
         assert eml_count("lamplighter") == 1
+
+        # The one outcome that leaves no other trace anywhere: nothing about
+        # the state directory changed, so without this line a redelivery is
+        # indistinguishable from a message that never arrived.
+        assert journal()[0]["outcome"] == "duplicate"
+        assert journal()[0]["file"] == journal()[1]["file"]
 
     with subtest("what OpenSMTPD hands the mda: the %{rcpt} question"):
         # The plan's open question, answered by observation. Everything is
@@ -477,6 +526,16 @@ pkgs.testers.runNixOSTest {
         # every deferring failure, the only place the *reason* survives at all.
         # The message names the two files that have drifted apart.
         mail.succeed("journalctl -u opensmtpd.service | grep -q 'no feed is configured'")
+
+        # The same fact, in the place that survives a log rotation: a refusal
+        # names the address that nobody owns and the sender that used it, which
+        # is what tells a retired newsletter apart from a stranger guessing.
+        refusal = journal()[0]
+        assert refusal["outcome"] == "no-feed", refusal
+        assert refusal["exit"] == 67
+        assert refusal["recipient"] == DRIFTED
+        assert "feed" not in refusal, "a refusal named a feed it did not have"
+        assert "file" not in refusal, "a refusal claimed to have stored something"
 
         # The defer side, also produced by the real program: the same mda
         # command with its feed list pointed at a file that does not exist.

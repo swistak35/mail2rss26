@@ -127,9 +127,15 @@ class IngestTest < Minitest::Test
     refute_includes DEFERRING, code, "an unknown recipient must not defer"
     assert_includes err, "no feed is configured"
     assert_includes err, "nothing was written"
-    # Not one directory, not one byte. F5 wanted this refused at SMTP time
+    # No feed directory and no .eml. F5 wanted this refused at SMTP time
     # anyway; reaching ingest at all means the two configurations disagree.
-    assert_empty Dir.children(@state)
+    #
+    # The journal directory is the one thing that does appear, and it is the
+    # exception the promise was always about the message: "nothing was written"
+    # means none of the newsletter is kept, not that the refusal goes
+    # unrecorded. A refusal that leaves no trace anywhere is precisely the
+    # drift F5 cannot see.
+    assert_empty stored_state
   end
 
   # OpenSMTPD replaces characters it considers suspicious with ":" when it
@@ -223,7 +229,7 @@ class IngestTest < Minitest::Test
 
     assert_includes DEFERRING, code
     assert_includes err, "nothing on stdin"
-    assert_empty Dir.children(@state)
+    assert_empty stored_state
   end
 
   # N3, stated as the property rather than as a number, and the reason this
@@ -367,7 +373,7 @@ class IngestTest < Minitest::Test
 
     assert_equal 67, code
     assert_includes output, "no feed is configured"
-    assert_empty Dir.children(@state)
+    assert_empty stored_state
   end
 
   # The same N3 property as above, but read off a real process the way smtpd
@@ -383,7 +389,140 @@ class IngestTest < Minitest::Test
     assert_includes output, "Permission denied"
   end
 
+  # --- the delivery journal -------------------------------------------------
+  #
+  # The journal is a record *of* deliveries, so these live here rather than in
+  # journal_test.rb: what is pinned is that every exit code the contract can
+  # produce leaves a line behind, and — the important one — that the journal
+  # can never change what that exit code is.
+
+  def test_a_delivery_leaves_a_journal_line_naming_the_feed_the_file_and_the_match
+    ingest(WEEKLY, "simple-multipart.eml")
+
+    entry = journal.first
+    assert_equal "stored", entry["outcome"]
+    assert_equal Mail2rss26::CLI::EX_OK, entry["exit"]
+    assert_equal "lamplighter", entry["feed"]
+    assert_equal WEEKLY, entry["recipient"]
+    assert_equal "exact", entry["match"]
+    assert_equal messages_in("lamplighter").first, entry["file"]
+    assert_equal "Issue 42: The quiet parts of a slow web", entry["subject"]
+    assert_equal "header", entry["date_source"]
+    assert_equal File.size(fixture_path("simple-multipart.eml")), entry["bytes"]
+  end
+
+  # A redelivery is a no-op against the disk by design, which used to mean it
+  # was invisible. It is the one outcome you cannot deduce from the state
+  # directory, because nothing about the state directory changed.
+  def test_a_redelivery_is_recorded_as_a_duplicate_and_names_the_file_we_already_had
+    ingest(WEEKLY, "simple-multipart.eml")
+    ingest(WEEKLY, "simple-multipart.eml")
+
+    assert_equal %w[duplicate stored], journal.map { |entry| entry["outcome"] }
+    assert_equal 1, messages_in("lamplighter").length
+    assert_equal journal.last["file"], journal.first["file"]
+  end
+
+  def test_a_tagged_recipient_is_recorded_as_having_matched_by_tag
+    ingest("#{WEEKLY.sub('@', '+list@')}", "simple-multipart.eml")
+
+    assert_equal "tag", journal.first["match"]
+  end
+
+  # F5 says this address should have been refused at SMTP time, so a line here
+  # is evidence that smtpd.conf and feeds.json have drifted apart. Recording
+  # the sender and subject is what tells a retired newsletter apart from a
+  # stranger guessing addresses — and only one of those is worth acting on.
+  def test_a_refused_delivery_is_recorded_with_who_sent_it_although_nothing_is_stored
+    code, = ingest("nikt@feeds.lasocha.net", "simple-multipart.eml")
+
+    assert_equal Mail2rss26::CLI::EX_NOUSER, code
+    entry = journal.first
+    assert_equal "no-feed", entry["outcome"]
+    assert_equal Mail2rss26::CLI::EX_NOUSER, entry["exit"]
+    assert_equal "nikt@feeds.lasocha.net", entry["recipient"]
+    assert_equal "20260812060316.4c1b9a7e@mail.lamplighter.example", entry["message_id"]
+    assert_nil entry["feed"]
+    assert_nil entry["file"]
+    assert_empty stored_state
+  end
+
+  # The deferrals are the whole reason this exists. A silently deferring mda
+  # line looks exactly like a quiet week with no newsletters, and stderr goes
+  # into a mail log that rotates.
+  def test_a_deferred_delivery_records_why_even_when_the_feed_list_is_what_broke
+    code, = run_cli("ingest", "--recipient", WEEKLY, "--config", File.join(@tmp, "gone.json"),
+                    "--state-dir", @state)
+
+    assert_includes DEFERRING, code
+    entry = journal.first
+    assert_equal "deferred", entry["outcome"]
+    assert_equal Mail2rss26::CLI::EX_TEMPFAIL, entry["exit"]
+    assert_equal "config", entry["reason"]
+    assert_equal WEEKLY, entry["recipient"]
+    assert_includes entry["error"], "gone.json"
+  end
+
+  def test_a_broken_mda_line_is_recorded_even_though_its_options_never_parsed
+    code, = run_cli("ingest", "--recipeint", WEEKLY, "--state-dir", @state)
+
+    assert_includes DEFERRING, code
+    assert_equal "usage", journal.first["reason"]
+  end
+
+  # `render` is run by systemd, and a systemd unit that fails is visible as a
+  # failed unit. Recording it here would put non-deliveries in a log of
+  # deliveries for no gain.
+  def test_render_writes_nothing_to_the_journal
+    run_cli("render", "--config", @config)
+
+    assert_empty journal
+  end
+
+  # The rule that matters most, and the one that is easy to get backwards. The
+  # message is on disk and the feed is rendered; the note about it could not be
+  # written. Deferring here would hand the envelope back to the queue over a
+  # bookkeeping failure, and the redelivery would find the message already
+  # stored — so the cost of getting this wrong is paid four days later, in
+  # confusion, for nothing.
+  def test_a_journal_that_cannot_be_written_does_not_fail_the_delivery
+    FileUtils.mkdir_p(File.join(@state, Mail2rss26::Journal::DIR))
+    FileUtils.chmod(0o500, File.join(@state, Mail2rss26::Journal::DIR))
+
+    code, _out, err = ingest(WEEKLY, "simple-multipart.eml")
+
+    assert_equal Mail2rss26::CLI::EX_OK, code
+    assert_equal 1, messages_in("lamplighter").length
+    assert_path_exists atom_path("lamplighter")
+    assert_includes err, "could not write the delivery journal"
+  end
+
+  # N6 is about rendering, and the journal is not part of a render — but it now
+  # sits inside the state directory, so it is worth one assertion that it stays
+  # out of the way.
+  def test_the_journal_does_not_disturb_a_rendered_feed
+    ingest(WEEKLY, "simple-multipart.eml")
+    before = File.binread(atom_path("lamplighter"))
+
+    ingest(WEEKLY, "simple-multipart.eml")
+
+    assert_equal before, File.binread(atom_path("lamplighter"))
+    refute_includes Dir.children(feed_dir("lamplighter")), Mail2rss26::Journal::DIR
+  end
+
   private
+
+  # Everything in the state directory that is a feed rather than the journal —
+  # which is what "nothing was written" has always meant and now has to say
+  # explicitly.
+  def stored_state
+    Dir.children(@state) - [Mail2rss26::Journal::DIR]
+  end
+
+  # Newest first, the way the viewer reads them.
+  def journal
+    Mail2rss26::Journal.new(@state).entries
+  end
 
   def ingest(recipient, fixture_name, *extra)
     run_cli("ingest", "--recipient", recipient, "--config", @config, *extra,

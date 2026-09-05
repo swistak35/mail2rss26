@@ -190,10 +190,21 @@ module Mail2rss26
     # is filed under the delivery clock, and the second delivery's clock reads
     # later than the first's.
     def store(dir, time, message_id, raw)
-      suffix = self.class.suffix(message_id)
-      return nil if Dir.children(dir).any? { |name| name.end_with?(suffix) }
+      return nil if find(dir, message_id)
 
-      self.class.write_atomically(File.join(dir, "#{time.utc.strftime(TIMESTAMP_FORMAT)}#{suffix}"), raw)
+      self.class.write_atomically(
+        File.join(dir, "#{time.utc.strftime(TIMESTAMP_FORMAT)}#{self.class.suffix(message_id)}"), raw
+      )
+    end
+
+    # The name this message is already filed under, or nil. Split out of
+    # `store` because a redelivery is now worth *naming* as well as skipping:
+    # the delivery journal says which file the message we already had is in,
+    # which is the difference between "nothing happened" and "we have this one
+    # already, here it is".
+    def find(dir, message_id)
+      suffix = self.class.suffix(message_id)
+      Dir.children(dir).find { |name| name.end_with?(suffix) }
     end
   end
 end
