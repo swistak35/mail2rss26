@@ -77,6 +77,19 @@ module Mail2rss26
     #   deferred   something failed; the envelope stays in the queue (exit 75)
     OUTCOMES = %w[stored duplicate no-feed deferred].freeze
 
+    # The journal is there but this process may not read it — which on the real
+    # machine means `mail2rss26 log` was run without sudo, because the
+    # directory is 0750 and owned by the delivery user.
+    #
+    # It is a distinct error rather than an empty result on purpose, and the
+    # reason is the whole point of the journal. "No deliveries recorded" and
+    # "you cannot see the deliveries" look identical on a terminal, and the
+    # first one is exactly the reassuring answer this feature exists to stop
+    # being believed: a delivery agent that has been deferring since Tuesday
+    # also produces an empty list. An inspection tool that answers "all quiet"
+    # when it means "I cannot tell" is worse than no tool.
+    class Unreadable < StandardError; end
+
     class << self
       def dir(state_dir)
         File.join(state_dir, DIR)
@@ -153,13 +166,17 @@ module Mail2rss26
       found
     end
 
-    # Every month file, oldest first. Missing directory is not an error: it
-    # means nothing has been delivered yet, which is a state the viewer has to
-    # render anyway on a machine deployed this morning.
+    # Every month file, oldest first.
+    #
+    # A *missing* directory is not an error: it means nothing has been
+    # delivered yet, which is the state of a machine deployed this morning and
+    # the viewer has to render it. Anything else is — see Unreadable.
     def files
       Dir.children(@dir).grep(FILE_PATTERN).sort.map { |name| File.join(@dir, name) }
-    rescue SystemCallError
+    rescue Errno::ENOENT
       []
+    rescue SystemCallError => e
+      raise Unreadable, "cannot read the delivery journal at #{@dir}: #{e.message}"
     end
 
     private
@@ -206,8 +223,12 @@ module Mail2rss26
     # locale question to ask.
     def lines(path)
       File.readlines(path, chomp: true, encoding: Encoding::UTF_8).filter_map { |line| parse(line) }
-    rescue SystemCallError
+    rescue Errno::ENOENT
+      # Listed a moment ago and gone now: whatever prunes old months won the
+      # race, and the months that are still there are still the answer.
       []
+    rescue SystemCallError => e
+      raise Unreadable, "cannot read #{path}: #{e.message}"
     end
 
     # A line this reader cannot use is skipped, not fatal. Two ways that

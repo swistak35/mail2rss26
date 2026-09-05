@@ -172,6 +172,64 @@ class ViewerTest < Minitest::Test
     end
   end
 
+  # --- the journal is 0750 on the real machine ------------------------------
+  #
+  # `mail2rss26` is in the system PATH, so anybody on the server can run these
+  # commands — but the journal is readable only by the delivery user. What that
+  # must never look like is an answer.
+
+  def test_log_refuses_rather_than_reporting_a_quiet_week_it_cannot_see
+    ingest(WEEKLY, "simple-multipart.eml")
+
+    unreadable_journal do
+      code, out, err = run_cli("log", "--config", @config)
+
+      assert_equal Mail2rss26::CLI::EX_FAILURE, code
+      assert_empty out
+      assert_includes err, "cannot read the delivery journal"
+      assert_includes err, "sudo -u mail2rss26"
+      refute_includes err, "no deliveries recorded",
+                      "an unreadable journal must not read as an empty one"
+    end
+  end
+
+  # A missing journal directory is a different thing entirely — a machine
+  # deployed this morning — and it stays a normal, zero-exit answer.
+  def test_a_journal_that_was_never_created_is_still_just_empty
+    code, _out, err = run_cli("log", "--config", @config)
+
+    assert_equal Mail2rss26::CLI::EX_OK, code
+    assert_includes err, "no deliveries recorded"
+  end
+
+  # Everything else `feeds` prints comes from world-readable files, so it stays
+  # useful without sudo — the one column that would be a guess says so.
+  def test_feeds_marks_the_last_delivery_unknown_rather_than_never
+    ingest(WEEKLY, "simple-multipart.eml")
+
+    unreadable_journal do
+      code, out, err = run_cli("feeds", "--config", @config)
+
+      assert_equal Mail2rss26::CLI::EX_OK, code
+      assert_match(/lamplighter\s+1\s+1\s+\?/, out)
+      assert_includes err, "sudo -u mail2rss26"
+    end
+  end
+
+  def test_show_does_not_claim_a_message_predates_the_journal_when_it_cannot_read_it
+    ingest(WEEKLY, "simple-multipart.eml")
+
+    unreadable_journal do
+      code, out, err = run_cli("show", "20260812T060316Z", "--config", @config)
+
+      assert_equal Mail2rss26::CLI::EX_OK, code
+      assert_includes out, "the journal was not readable"
+      refute_includes out, "before the journal existed"
+      assert_includes out, "Issue 42", "the .eml is world-readable and still worth printing"
+      assert_includes err, "sudo -u mail2rss26"
+    end
+  end
+
   # --- show -----------------------------------------------------------------
 
   def test_show_joins_the_journals_account_to_the_message_on_disk
@@ -319,6 +377,19 @@ class ViewerTest < Minitest::Test
     code, _out, err = run_cli("ingest", "--recipient", recipient, "--config", @config,
                               stdin: StringIO.new(File.binread(fixture_path(fixture_name))))
     [code, err]
+  end
+
+  # 0000 rather than 0750: the test runs as one user, so the only way to
+  # reproduce "this process may not read it" is to lock everybody out. Skipped
+  # for root, which the mode bits do not apply to.
+  def unreadable_journal
+    dir = File.join(@state, Mail2rss26::Journal::DIR)
+    skip "root ignores the mode bits" if Process.uid.zero?
+
+    File.chmod(0o000, dir)
+    yield
+  ensure
+    File.chmod(0o750, dir) if File.directory?(dir)
   end
 
   # Encoding.default_external is global and warns when it is assigned, which is

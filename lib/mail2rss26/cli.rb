@@ -393,6 +393,16 @@ module Mail2rss26
         viewer(options, config, stdout, stderr).feeds
         EX_OK
       end
+    rescue Journal::Unreadable => e
+      # Its own arm rather than a line in the one below, because the fix is
+      # almost always a word the operator forgot rather than anything wrong
+      # with the machine. `log` fails outright here — the journal *is* the
+      # command — while `show` and `feeds` catch it themselves and carry on
+      # with what they can read, since most of what they show is world
+      # readable.
+      stderr.puts "mail2rss26: #{e.message}"
+      stderr.puts "mail2rss26: #{Viewer::SUDO_HINT}"
+      EX_FAILURE
     rescue OptionParser::ParseError, UsageError, Config::Error, SystemCallError, IOError => e
       stderr.puts "mail2rss26: #{e.message}"
       EX_FAILURE

@@ -40,6 +40,13 @@ module Mail2rss26
     # megabyte of HTML. --raw and --body are the ways to ask for the rest.
     BODY_PREVIEW = 400
 
+    # The journal is 0750 and owned by the delivery user, so the overwhelmingly
+    # likely reason it cannot be read is a missing sudo rather than anything
+    # broken. Saying which sudo is the difference between an error and an
+    # instruction.
+    SUDO_HINT = "the journal is readable only by the mail2rss26 user; " \
+                "run this as `sudo -u mail2rss26 mail2rss26 ...` (or as root)"
+
     def initialize(state_dir:, config: nil, stdout: $stdout, stderr: $stderr)
       @state_dir = state_dir
       @config = config
@@ -71,6 +78,10 @@ module Mail2rss26
     # Everything known about one delivery: the journal's account of what was
     # decided, and the message itself if it is still on disk.
     def show(key, part: :summary)
+      # `show` degrades rather than failing when the journal is out of reach:
+      # the .eml files are world-readable, so most of the answer is still
+      # available and printing it beats refusing. What it must not do is
+      # present the degraded answer as the complete one — see summary.
       entry = find_entry(key)
       path = message_path(entry, key)
 
@@ -108,6 +119,11 @@ module Mail2rss26
       print_rows(["FEED", "MESSAGES", "ENTRIES", "LAST DELIVERY", "ADDRESSES"],
                  @config.feeds.map { |feed| feed_row(feed) },
                  align_right: [1, 2], last_flexible: true)
+
+      return unless @unreadable
+
+      @stderr.puts "mail2rss26: #{@unreadable.message}"
+      @stderr.puts "mail2rss26: #{SUDO_HINT} — until then \"?\" is \"cannot tell\", not \"never\""
     end
 
     private
@@ -157,8 +173,18 @@ module Mail2rss26
       pairs << ["body", body_line(entry, message)]
       pairs << ["reason", [entry["reason"], entry["error"]].compact.join(": ")] if entry&.dig("reason")
 
-      @stdout.puts "Delivery #{display_time(entry['at'])}" if entry
-      @stdout.puts "Message on disk, no journal entry (delivered before the journal existed)" if entry.nil?
+      if entry
+        @stdout.puts "Delivery #{display_time(entry['at'])}"
+      elsif @unreadable
+        # The distinction matters: "there is no journal line for this" and "I
+        # could not look" are different answers, and only one of them means the
+        # message predates the journal.
+        @stderr.puts "mail2rss26: #{@unreadable.message}"
+        @stderr.puts "mail2rss26: #{SUDO_HINT}"
+        @stdout.puts "Message on disk; the journal was not readable, so what was done with it is unknown"
+      else
+        @stdout.puts "Message on disk, no journal entry (delivered before the journal existed)"
+      end
       pairs.reject { |_, value| value.nil? || value.to_s.empty? }
            .each { |name, value| @stdout.puts format("  %-11s %s", name, value) }
 
@@ -264,6 +290,9 @@ module Mail2rss26
       @journal.entries.find do |entry|
         entry["message_id"].to_s.include?(key) || entry["file"].to_s.include?(key)
       end
+    rescue Journal::Unreadable => e
+      @unreadable = e
+      nil
     end
 
     # The journal knows where a message was filed; anything delivered before
@@ -299,13 +328,24 @@ module Mail2rss26
 
     def feed_row(feed)
       dir = File.join(@state_dir, feed.name)
-      last = @journal.entries(feed: feed.name, outcome: "stored", limit: 1).first
 
       [feed.name,
        stored_count(dir).to_s,
        entry_count(File.join(dir, Store::ATOM)).to_s,
-       last ? display_time(last["at"]) : "-",
+       last_delivery(feed),
        feed.addresses.join(", ")]
+    end
+
+    # "-" means nothing has ever been delivered; "?" means this process cannot
+    # see the journal. Everything else in this table comes from world-readable
+    # files, so the command stays useful without sudo — but the one column that
+    # would be a guess says so instead of guessing.
+    def last_delivery(feed)
+      last = @journal.entries(feed: feed.name, outcome: "stored", limit: 1).first
+      last ? display_time(last["at"]) : "-"
+    rescue Journal::Unreadable => e
+      @unreadable ||= e
+      "?"
     end
 
     def stored_count(dir)

@@ -413,6 +413,10 @@ the operator already needs for `render`.
 
 ### Reading it
 
+Enabling the module puts `mail2rss26` in the system `PATH` — it is already in the closure,
+so the symlink is free — and the inspection commands are the reason that is worth doing.
+They need `sudo` because the journal is `0750`:
+
 ```bash
 sudo -u mail2rss26 mail2rss26 log
 sudo -u mail2rss26 mail2rss26 log --outcome deferred --since 1d
@@ -432,6 +436,15 @@ TIME                 OUTCOME    FEED         FROM                            SUB
 log a person is reading, not a query language. `--limit 0` means all. Nothing wraps: a log
 you can `grep` is worth more than a log that never elides anything, and `--json` answers the
 stored lines when you want the untruncated field.
+
+Run without it, `log` **fails** with the reason and the sudo you forgot, rather than
+answering "no deliveries recorded". That distinction is the feature, not politeness about
+error messages: "nothing arrived" and "I cannot see what arrived" look identical on a
+terminal, and the first is exactly the reassuring answer this journal exists to stop being
+believed — a delivery agent that has been deferring since Tuesday also produces an empty
+list. `feeds` and `show` degrade instead of failing, because everything else they print
+comes from world-readable files; `feeds` writes `?` under LAST DELIVERY rather than `-`, and
+`show` says the journal was unreadable rather than claiming the message predates it.
 
 **The second line above is the one worth a habit.** The open question the plan records as
 *"nobody looks at the queue"* is real: the whole safety argument for deferring is "an
