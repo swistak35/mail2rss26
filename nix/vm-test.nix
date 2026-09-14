@@ -308,17 +308,21 @@ pkgs.testers.runNixOSTest {
 
 
     def journal():
-        """Every delivery-journal line, newest first, as the operator sees it.
+        """Every delivery-journal line, newest first.
 
-        Read through the program's own `log --json` rather than by cat-ing the
-        files, because the reading half is what an operator on this machine
-        actually runs — and it runs as the service user, under systemd-run so
-        that it gets no more environment than a delivery does.
+        Read with `cat` rather than through `mail2rss26 log --json`, and the
+        reason is measured rather than assumed: `systemd-run` costs about
+        seventeen seconds a call on this machine while `cat` costs half of one,
+        and calling it from every assertion made the subtests slow enough that
+        the next SMTP conversation timed out. The reading half has 180 tests of
+        its own; what only a machine can show is that a *delivery* writes the
+        line, and that is what these assertions are for.
+
+        The operator's own command does get exercised, once, in the last
+        subtest — where being slow costs nothing because nothing follows it.
         """
-        raw = mail.succeed(
-            f"systemd-run --pipe --quiet --uid=mail2rss26 {MAIL2RSS26} log --json --limit 0"
-        )
-        return [json.loads(line) for line in raw.splitlines() if line.strip()]
+        raw = mail.succeed(f"cat $(ls {STATE}/journal/*.jsonl | sort)")
+        return [json.loads(line) for line in reversed(raw.splitlines()) if line.strip()]
 
 
     def expansions():
@@ -424,7 +428,9 @@ pkgs.testers.runNixOSTest {
         assert line["match"] == "exact"
         assert line["subject"] == "Issue 42: The quiet parts of a slow web"
         assert line["date_source"] == "header"
-        assert mail.succeed(f"ls {STATE}/lamplighter").strip() == line["file"]
+        # Membership, not equality: the directory also holds atom.xml, so the
+        # journal's filename is one entry in the listing rather than all of it.
+        assert line["file"] in mail.succeed(f"ls {STATE}/lamplighter").split(), line
 
     with subtest("F6: the same newsletter delivered twice is still one entry"):
         before = mail.succeed(f"sha256sum {STATE}/lamplighter/atom.xml").split()[0]
@@ -562,5 +568,34 @@ pkgs.testers.runNixOSTest {
         send("", "anything@${tempfailDomain}")
         mail.wait_until_succeeds(f"test -s {PROBE}/tempfail-attempts")
         mail.succeed("smtpctl show queue | grep -q .")
+
+    with subtest("the operator's own view of all of it, under real permissions"):
+        # Last, and deliberately so: `systemd-run` costs about seventeen
+        # seconds a call here, which is why the assertions above read the
+        # journal with `cat` instead. Nothing follows this subtest, so the cost
+        # buys the one thing no unit test can reach — the real system user, the
+        # real 0750 that tmpfiles created, and the packaged wrapper under an
+        # environment as bare as a delivery's.
+        as_service_user = f"systemd-run --pipe --quiet --uid=${user} {MAIL2RSS26}"
+
+        listing = mail.succeed(f"{as_service_user} log --limit 0")
+        print(listing)
+        assert "lamplighter" in listing
+        assert "stored" in listing
+        assert "duplicate" in listing, "the redelivery is only visible here"
+        assert "no-feed" in listing, "the refused recipient is only visible here"
+        assert "deferred" in listing, "a deferring delivery looks like a quiet week without this"
+
+        # The other half of the same fact, and the one that would otherwise be
+        # found out on a bad day: a reader who cannot see the journal has to be
+        # told so. "No deliveries recorded" and "you cannot see the deliveries"
+        # look identical on a terminal, and believing the first one is exactly
+        # the failure this journal exists to prevent.
+        denied = mail.fail(
+            f"systemd-run --pipe --quiet --uid=nobody {MAIL2RSS26} log 2>&1 > /dev/null"
+        )
+        print(denied)
+        assert "cannot read the delivery journal" in denied
+        assert "sudo -u ${user}" in denied
   '';
 }
