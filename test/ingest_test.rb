@@ -91,6 +91,26 @@ class IngestTest < Minitest::Test
   # The filename is dated from the *message*, not from the delivery, whenever
   # the message dated itself. That is what makes `ls` chronological and what
   # makes a redelivery land on the same name.
+  # The page goes out with the delivery, before the feed that links to it, and
+  # the link in the feed resolves to the file nginx will serve.
+  def test_a_delivery_publishes_the_page_its_entry_links_to
+    ingest(WEEKLY, "simple-multipart.eml")
+
+    href = entries_of(atom("lamplighter")).first.elements["link"].attributes["href"]
+    prefix = "#{FEED_URL.delete_suffix(".atom")}/"
+    assert href.start_with?(prefix), href
+
+    page = File.join(feed_dir("lamplighter"), "pages", href.delete_prefix(prefix))
+    assert File.file?(page), "#{page} was not written"
+    assert_includes File.read(page, encoding: "UTF-8"), "The quiet parts of a slow web"
+  end
+
+  def test_a_feed_without_a_url_gets_no_pages
+    ingest(OKAZJE, "plain-only.eml")
+
+    refute File.exist?(File.join(feed_dir("okazje"), "pages"))
+  end
+
   def test_the_stored_name_carries_the_messages_own_date_and_its_id
     ingest(WEEKLY, "simple-multipart.eml")
     name = messages_in("lamplighter").first

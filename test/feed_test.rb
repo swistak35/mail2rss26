@@ -82,6 +82,88 @@ class FeedTest < Minitest::Test
     refute_includes xml, "<link"
   end
 
+  # --- the newsletter as mailed: alternate links and pages ------------------
+
+  # The reader throws the newsletter's CSS away; the page behind this link is
+  # where it survives. Under the feed's own URL minus ".atom", so it is exactly
+  # as secret as the feed and rotates with it.
+  def test_every_entry_links_to_its_page_under_the_feed_url
+    messages = all_fixtures
+    by_id = entries_by_id(feed(messages).to_atom)
+
+    messages.each do |m|
+      entry = by_id.fetch(entry_id_of(m))
+      link = entry.elements["link"]
+
+      assert_equal "alternate", link.attributes["rel"]
+      assert_equal "text/html", link.attributes["type"]
+      assert_equal "https://feeds.lasocha.net/7c31e9a2b4d8f05e/#{Mail2rss26::Store.file_id(m.message_id)}.html",
+                   link.attributes["href"]
+    end
+  end
+
+  def test_a_page_is_the_html_exactly_as_mailed
+    nasty = %(<!DOCTYPE html><html><head><style>td { padding: 0 }</style></head>) +
+            %(<body><div style="display:none">preheader</div><script>var t = 1 < 2;</script></body></html>)
+    m = synthetic(body: nasty)
+
+    Dir.mktmpdir do |dir|
+      feed([m]).write_pages(dir)
+
+      assert_equal [page_name_of(m)], Dir.children(dir)
+      assert_equal nasty, File.read(File.join(dir, page_name_of(m)), encoding: "UTF-8")
+    end
+  end
+
+  def test_a_plain_text_page_is_escaped_into_a_document_of_its_own
+    m = synthetic(subject: "A < B", body: "1 < 2 & <b>not bold</b>\n", content_type: "text/plain; charset=UTF-8")
+
+    Dir.mktmpdir do |dir|
+      feed([m]).write_pages(dir)
+      page = File.read(File.join(dir, page_name_of(m)), encoding: "UTF-8")
+
+      assert page.start_with?("<!DOCTYPE html>")
+      assert_includes page, %(<meta charset="utf-8">)
+      assert_includes page, "<title>A &lt; B</title>"
+      assert_includes page, "1 &lt; 2 &amp; &lt;b&gt;not bold&lt;/b&gt;"
+    end
+  end
+
+  # Every delivery re-renders all fifty; an unchanged page is not rewritten.
+  def test_an_unchanged_page_is_left_alone
+    Dir.mktmpdir do |dir|
+      feed(all_fixtures).write_pages(dir)
+      before = Dir.children(dir).to_h { |name| [name, File.stat(File.join(dir, name)).ino] }
+      feed(all_fixtures).write_pages(dir)
+      after = Dir.children(dir).to_h { |name| [name, File.stat(File.join(dir, name)).ino] }
+
+      assert_equal all_fixtures.length, before.length
+      assert_equal before, after
+    end
+  end
+
+  def test_pages_exist_only_for_the_entries_the_feed_keeps
+    messages = (1..(Mail2rss26::Feed::MAX_ENTRIES + 3)).map do |i|
+      synthetic(message_id: "<m#{i}@example.com>", date: Time.utc(2026, 1, 1) + (i * 3600))
+    end
+
+    Dir.mktmpdir do |dir|
+      feed(messages).write_pages(dir)
+
+      assert_equal Mail2rss26::Feed::MAX_ENTRIES, Dir.children(dir).length
+      refute File.exist?(File.join(dir, page_name_of(messages.first))), "the oldest fell out of the feed"
+    end
+  end
+
+  def test_a_feed_without_a_self_url_writes_no_pages
+    Dir.mktmpdir do |dir|
+      pages = File.join(dir, "pages")
+      Mail2rss26::Feed.new(id: FEED_ID, title: FEED_TITLE, messages: all_fixtures).write_pages(pages)
+
+      refute File.exist?(pages)
+    end
+  end
+
   # --- F3 into Atom: which content type, and no sanitising ------------------
 
   def test_the_content_type_follows_the_part_that_won
@@ -483,5 +565,9 @@ class FeedTest < Minitest::Test
 
   def entry_id_of(message)
     text_of(entries_of(parse(feed([message]).to_atom)).first, "id")
+  end
+
+  def page_name_of(message)
+    "#{Mail2rss26::Store.file_id(message.message_id)}.html"
   end
 end

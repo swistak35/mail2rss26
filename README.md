@@ -305,6 +305,8 @@ in.
 │   ├── 20260805T071244Z-pw-08.20260805071244@mail.pixelwharf.exa-45fe21151281f73c.eml
 │   ├── 20260812T060316Z-20260812060316.4c1b9a7e@mail.lamplighter-86791c3c9825e41c.eml
 │   ├── atom.xml                       what nginx serves
+│   ├── pages/                         each entry as mailed, behind its alternate link
+│   │   └── 20260812060316.4c1b9a7e@mail.lamplighter-86791c3c9825e41c.html
 │   └── .lock                          one delivery at a time
 └── journal/                           0750 — see below
     ├── 2026-09.jsonl                  one line per run of `ingest`
@@ -339,6 +341,23 @@ id half already matches and, if there is one, writes nothing at all. (The timest
 deliveries may differ, which is why the match is on the id half rather than the whole
 name.) The renderer deduplicates by `Message-ID` as well — the two mechanisms are
 independent and both are cheap.
+
+**Every entry also gets a page**, `pages/<id>.html`, and a `<link rel="alternate">` to it
+at the feed's own URL minus `.atom`: `https://feeds.lasocha.net/7c31e9a2b4d8f05e.atom`
+publishes its pages under `https://feeds.lasocha.net/7c31e9a2b4d8f05e/`. The reason is the
+reader, not the feed: FreshRSS (like most readers) sanitises `<content>` down to markup
+with no `style` attribute and no `<style>` element, and a newsletter's whole look lives in
+exactly those. The page is the HTML part as mailed, untouched — the one place the
+newsletter appears as designed, and a link every client can open, mobile apps included.
+The pages are as secret as the feed and rotate with its URL. They are written *before*
+`atom.xml`, so a published link never points at a missing page; an unchanged page is not
+rewritten; a page is never deleted, because an entry that falls out of the fifty is still
+in somebody's reader. A feed without a `url` gets no pages and no links.
+
+Serving them is the machine's half: one prefix location per feed, aliased to `pages/`, with
+a `Content-Security-Policy: sandbox` header so nothing a newsletter carries can run script —
+see the Rivendell vhost. That header is what makes publishing untouched mail HTML safe; do
+not serve `pages/` without it.
 
 Feeds are truncated to the **50 most recent entries** at render time only. The `.eml` files
 stay, so raising the limit republishes older entries rather than needing them re-delivered.

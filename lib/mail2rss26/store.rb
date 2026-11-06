@@ -8,6 +8,7 @@ module Mail2rss26
   #
   #   /var/lib/mail2rss26/<feed>/20260812T060316Z-<id>.eml   one delivered message
   #   /var/lib/mail2rss26/<feed>/atom.xml                    what nginx serves
+  #   /var/lib/mail2rss26/<feed>/pages/<id>.html              each entry as mailed
   #   /var/lib/mail2rss26/<feed>/.lock                       one delivery at a time
   #
   # Files, not a database: a backup is a copy of the directory and debugging is
@@ -31,6 +32,13 @@ module Mail2rss26
   #   one entry, it does not write a second file at all.
   class Store
     ATOM = "atom.xml"
+
+    # A directory of its own rather than .html files beside the .eml: nginx
+    # publishes it whole, with one prefix location and an alias, and what
+    # makes that safe is that nothing but rendered pages ever lands in it. The
+    # .eml files, the lock and the feed itself stay reachable only through
+    # their own exact locations, as before.
+    PAGES = "pages"
 
     # Not "lock" and not "mail2rss26.lock": the leading dot keeps it out of a
     # careless `nginx autoindex` and out of any glob a human types, and the
@@ -111,6 +119,10 @@ module Mail2rss26
 
       def atom_path(dir)
         File.join(dir, ATOM)
+      end
+
+      def pages_dir(dir)
+        File.join(dir, PAGES)
       end
 
       # N4, for both files this program writes: the rename is the atomic step

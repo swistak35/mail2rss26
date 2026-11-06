@@ -552,9 +552,12 @@ module Mail2rss26
       options[:state_dir] || config.state_dir || DEFAULT_STATE_DIR
     end
 
+    # Pages first, then the feed: a link is only ever published once the page
+    # it points at is on disk.
     def write_feed(feed, dir)
-      Feed.from_directory(dir, id: feed.id, title: feed.title, self_url: feed.url)
-          .write(Store.atom_path(dir))
+      rendered = Feed.from_directory(dir, id: feed.id, title: feed.title, self_url: feed.url)
+      rendered.write_pages(Store.pages_dir(dir))
+      rendered.write(Store.atom_path(dir))
     end
 
     def read_message(stdin)

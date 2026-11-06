@@ -150,6 +150,67 @@ module Mail2rss26
       Store.write_atomically(path, to_atom)
     end
 
+    # Every entry as a page of its own: the newsletter exactly as it was
+    # mailed, at the URL the entry's rel="alternate" link points to.
+    #
+    # Why it exists: a feed reader sanitises <content>, and FreshRSS's
+    # sanitiser keeps no `style` attribute and no <style> element. A newsletter
+    # is a stack of tables whose whole look lives in exactly those, so inside
+    # the reader it arrives as a bare skeleton. The page is the one place it is
+    # shown as designed — and since it is a link, it works from every client,
+    # the mobile apps included, which no reader-side CSS ever reaches.
+    #
+    # Same N4 as the feed, plus an ordering the caller owns: pages are written
+    # *before* atom.xml, so no published link ever points at a page that is not
+    # there yet. A page whose bytes have not changed is left alone rather than
+    # rewritten, because every delivery re-renders all fifty and fsyncing fifty
+    # identical files to say nothing new is a cost with no buyer.
+    #
+    # Pages are never deleted. An entry that falls out of the fifty is still in
+    # somebody's reader with its link, and a link that starts answering 404 the
+    # day the newsletter scrolls off is worse than a directory that grows — the
+    # same trade the .eml files already make (see the plan's open question on
+    # pruning them).
+    #
+    # A feed without a self_url gets no pages at all: nothing would ever link
+    # to them, and an unlinked copy of every newsletter is only more to back up.
+    def write_pages(dir)
+      return unless pages_base_url
+
+      FileUtils.mkdir_p(dir)
+      entries.each do |message|
+        path = File.join(dir, page_name(message))
+        page = page_for(message)
+        next if File.exist?(path) && File.binread(path) == page.b
+
+        Store.write_atomically(path, page)
+      end
+    end
+
+    # One name per Message-ID, and the same one the .eml is filed under minus
+    # its timestamp: Store.file_id is already the stable, path-safe form of the
+    # id, and a second sanitiser here would only be a second thing to keep in
+    # step. Without the timestamp because a redelivery may carry a different
+    # one, and the page must not move when it does.
+    def page_name(message)
+      "#{Store.file_id(message.message_id)}.html"
+    end
+
+    # Where the pages are published: the feed's own URL without its ".atom",
+    # used as a directory. Derived from self_url rather than configured beside
+    # it, which buys two things. It is exactly as secret as the feed — the page
+    # of a newsletter is the newsletter, so it has no business being any easier
+    # to find. And it rotates with the feed: replacing a leaked URL takes the
+    # pages with it, with no second token to remember. nginx on the machine
+    # side has to derive the same prefix, which is why the rule is this
+    # simple.
+    #
+    # No self_url, no links: there is nothing to hang them off, and a link
+    # invented without one would be a lie a reader could click.
+    def pages_base_url
+      @self_url&.delete_suffix(".atom")
+    end
+
     private
 
     # F6. The same newsletter delivered twice is one entry, keyed on
@@ -177,6 +238,11 @@ module Mail2rss26
       xml = +"  <entry>\n"
       xml << element("id", entry_id(message), indent: "    ")
       xml << element("title", message.title, indent: "    ")
+      # The newsletter as mailed — see write_pages. In a reader this is the
+      # "open original" every client has, which is the point of it.
+      if pages_base_url
+        xml << %(    <link rel="alternate" type="text/html" href="#{attribute("#{pages_base_url}/#{page_name(message)}")}"/>\n)
+      end
       xml << element("updated", message.date.utc.strftime(RFC3339), indent: "    ")
       # Identical to <updated> because we only ever see a message once; readers
       # sort on <published> and would otherwise have to guess.
@@ -187,7 +253,7 @@ module Mail2rss26
       # sanitise anyway and doing it here is a dependency plus a way to mangle
       # content. An attachment-only message has an empty body and gets an empty
       # <content>: RFC 4287 lets an entry with no content stand only if it has
-      # a rel="alternate" link, and it has nowhere to point.
+      # a rel="alternate" link, and a feed without a self_url has none.
       xml << element("content", message.body, indent: "    ",
                                               attributes: %( type="#{message.html? ? "html" : "text"}"))
       xml << "  </entry>\n"
@@ -236,6 +302,41 @@ module Mail2rss26
       # but a Message-ID mangled enough to keep one would otherwise smuggle a
       # %3C into the id forever.
       "mid:#{percent_encode(id.delete_prefix("<").delete_suffix(">"))}"
+    end
+
+    # The page behind an entry's alternate link.
+    #
+    # HTML goes out exactly as it was mailed: the whole point of the page is
+    # the markup the reader threw away, so cleaning it here would undo the
+    # reason it exists. It is Message#body, so it is already UTF-8 whatever the
+    # mail said, and a <meta charset> inside that still names the original
+    # charset is overruled by the Content-Type header nginx sends — a header
+    # beats a meta. Nothing is prepended to fix that from in here: anything in
+    # front of the newsletter's own <!DOCTYPE> drops the browser into quirks
+    # mode and breaks the very layout this page is for.
+    #
+    # The page's safety is the machine's job, not this method's: nginx serves
+    # these with a CSP `sandbox`, so whatever script a newsletter carries never
+    # runs. (See the Rivendell vhost.)
+    #
+    # Plain text gets a minimal document of its own, escaped, so it reads as
+    # the text it is and not as markup it never was.
+    def page_for(message)
+      return message.body if message.html?
+
+      <<~HTML
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>#{escape(message.title)}</title>
+        </head>
+        <body>
+        <pre style="white-space: pre-wrap; font-family: inherit; max-width: 45em; margin: 1em auto; padding: 0 1em;">#{escape(message.body)}</pre>
+        </body>
+        </html>
+      HTML
     end
 
     def percent_encode(text)
